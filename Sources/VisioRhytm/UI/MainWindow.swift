@@ -32,6 +32,17 @@ struct MainWindow: View {
                         Image(systemName: "plus.magnifyingglass")
                         Text(state.zoom, format: .percent.precision(.fractionLength(0))).monospacedDigit().frame(width: 46)
                     }.padding(16)
+                    HStack(spacing: 12) {
+                        Button { state.fitLinesToPlaybackRange() } label: {
+                            Label("Подогнать строки под такты", systemImage: "arrow.left.and.right")
+                        }
+                        .disabled(state.project.lines.isEmpty)
+                        .help("Разместить все строки от первого до последнего выбранного такта и пересчитать плотность.")
+                        let settings = state.project.metronomeSettings
+                        Text("Диапазон \(settings.loopStartBar)–\(settings.loopEndBar) · \(settings.loopEndBar - settings.loopStartBar + 1) такт.")
+                            .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                        Spacer(minLength: 0)
+                    }.padding(.horizontal, 16).padding(.bottom, 12)
                     Divider()
                     RhythmCanvas(state: state)
                     Divider()

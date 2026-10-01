@@ -108,6 +108,24 @@ final class AppState {
         let length = Int64(bars) * project.timeSignature.barTicks
         updateLine(id) { $0.rhythmicLength.ticks = length }
     }
+    func fitLinesToPlaybackRange() {
+        guard !project.lines.isEmpty else { return }
+        perform {
+            let range = RhythmEngine.playbackRange(project: project)
+            let length = range.upperBound - range.lowerBound
+            var fitted = project
+            for index in fitted.lines.indices {
+                guard Int64(fitted.lines[index].syllables.count) <= length else {
+                    throw ProjectError.invalid("в строке \(index + 1) слишком много слогов для выбранного диапазона. Увеличьте число тактов")
+                }
+                fitted.lines[index].startPosition.ticks = range.lowerBound
+                fitted.lines[index].rhythmicLength.ticks = length
+                lyricsEngine.layout(&fitted.lines[index])
+            }
+            try store.validate(fitted)
+            edit { $0 = fitted }
+        }
+    }
     func setDensity(_ id: UUID, density: Double) {
         let signature = project.timeSignature
         updateLine(id) {
