@@ -85,7 +85,7 @@ struct TransportBar: View {
             Image(systemName: "waveform.path").font(.title2).foregroundStyle(.teal)
             TextField("Название проекта", text: Binding(get: { state.project.title }, set: { title in state.edit { $0.title = String(title.prefix(500)) } }))
                 .textFieldStyle(.plain).font(.title3.bold()).frame(maxWidth: 280)
-            if state.isDirty || state.lyricsDraft != state.project.lyrics { Circle().fill(.orange).frame(width: 7, height: 7).help("Несохранённые изменения") }
+            if state.hasUnsavedChanges { Circle().fill(.orange).frame(width: 7, height: 7).help("Несохранённые изменения") }
             Spacer()
             Button { state.returnToStart() } label: { Image(systemName: "backward.end.fill") }.help("Вернуться к началу, ⌘Return")
             Button { state.togglePlayback() } label: {

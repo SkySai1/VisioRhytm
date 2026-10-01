@@ -12,7 +12,9 @@ final class AppState {
     var errorMessage: String?
     var selectedLineID: UUID?
     private(set) var fileURL: URL?
-    private(set) var isDirty = false
+    private var cleanProject: Project
+    var isDirty: Bool { project != cleanProject }
+    var hasUnsavedChanges: Bool { isDirty || lyricsDraft != project.lyrics }
     private(set) var recoveryMessage: String?
     private var fitSnapshot: FitSnapshot?
     var canResetLineFit: Bool {
@@ -29,8 +31,10 @@ final class AppState {
     @ObservationIgnored private let lyricsEngine = LyricsEngine()
     @ObservationIgnored private var autosaveTask: Task<Void, Never>?
     @ObservationIgnored private let autosaveURL: URL
+    @ObservationIgnored private let confirmDiscard: (() -> Bool)?
 
-    init(autosaveURL customAutosaveURL: URL? = nil) {
+    init(autosaveURL customAutosaveURL: URL? = nil, confirmDiscard: (() -> Bool)? = nil) {
+        self.confirmDiscard = confirmDiscard
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         autosaveURL = customAutosaveURL ?? support.appendingPathComponent("VisioRhytm/Autosave.visiorhythm")
         var initial = Project()
@@ -38,12 +42,12 @@ final class AppState {
             do {
                 initial = try store.load(from: autosaveURL)
                 recoveryMessage = "Восстановлена последняя рабочая сессия. Сохраните её в файл проекта."
-                isDirty = true
             } catch {
                 recoveryMessage = "Не удалось прочитать autosave: \(error.localizedDescription). Исходный файл сохранён."
             }
         }
         project = initial
+        cleanProject = initial
         lyricsDraft = initial.lyrics
         metronome.onFailure = { [weak self] in self?.errorMessage = $0 }
     }
@@ -69,7 +73,6 @@ final class AppState {
     }
     private func changed() {
         if !canResetLineFit { fitSnapshot = nil }
-        isDirty = true
         autosaveTask?.cancel()
         let snapshot = project
         let url = autosaveURL
@@ -207,7 +210,8 @@ final class AppState {
         do { try action() } catch { errorMessage = error.localizedDescription }
     }
     private func mayDiscard() -> Bool {
-        guard isDirty || lyricsDraft != project.lyrics else { return true }
+        guard hasUnsavedChanges else { return true }
+        if let confirmDiscard { return confirmDiscard() }
         let alert = NSAlert()
         alert.messageText = "Сохранить текущий проект?"
         alert.informativeText = "В проекте есть несохранённые изменения."
@@ -225,27 +229,35 @@ final class AppState {
         replace(with: Project(), url: nil)
     }
     func openProject() {
-        guard mayDiscard() else { return }
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.visioRhytmProject, .json]
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        perform { replace(with: try store.load(from: url), url: url) }
+        openURL(url)
     }
-    func openURL(_ url: URL) {
-        guard mayDiscard() else { return }
-        perform { replace(with: try store.load(from: url), url: url) }
+    @discardableResult func openURL(_ url: URL) -> Bool {
+        // Finder and SwiftUI may deliver the same file-open event twice.
+        guard fileURL?.standardizedFileURL != url.standardizedFileURL else { return true }
+        do {
+            let loaded = try store.load(from: url)
+            guard mayDiscard() else { return false }
+            replace(with: loaded, url: url)
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
     }
     private func replace(with newProject: Project, url: URL?) {
         metronome.stop()
         fitSnapshot = nil
         project = newProject
+        cleanProject = newProject
         lyricsDraft = newProject.lyrics
         fileURL = url
         recoveryMessage = nil
         selectedLineID = nil
         changed()
-        isDirty = false
         returnToStart()
     }
     @discardableResult func save(as saveAs: Bool = false) -> Bool {
@@ -262,7 +274,7 @@ final class AppState {
         do {
             try store.save(project, to: destination)
             fileURL = destination
-            isDirty = false
+            cleanProject = project
             return true
         } catch { errorMessage = error.localizedDescription; return false }
     }
