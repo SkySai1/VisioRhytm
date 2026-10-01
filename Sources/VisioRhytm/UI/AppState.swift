@@ -9,6 +9,7 @@ final class AppState {
     var project: Project
     var lyricsDraft: String
     var zoom: Double = 1
+    var showClickStripes = true
     var errorMessage: String?
     var selectedLineID: UUID?
     private(set) var fileURL: URL?

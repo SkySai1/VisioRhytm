@@ -27,6 +27,9 @@ struct MainWindow: View {
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()
+                        Toggle("Полосы кликов", isOn: $state.showClickStripes)
+                            .toggleStyle(.checkbox).font(.caption)
+                            .help("Показать или скрыть фиолетовые вертикальные полосы. Точки кликов остаются в линейке; звук не меняется.")
                         Image(systemName: "minus.magnifyingglass")
                         Slider(value: $state.zoom, in: 0.5...3).frame(width: 120).accessibilityLabel("Масштаб")
                         Image(systemName: "plus.magnifyingglass")

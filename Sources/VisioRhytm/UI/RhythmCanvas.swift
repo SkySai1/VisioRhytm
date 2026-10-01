@@ -7,6 +7,7 @@ struct RhythmCanvas: View {
     static let rulerHeight: CGFloat = 64
     private let controlsWidth: CGFloat = 260
     var body: some View {
+        let showClickStripes = state.showClickStripes
         GeometryReader { geometry in
             let signature = state.project.timeSignature
             let ticks = RhythmEngine.timelineEndTicks(project: state.project)
@@ -28,7 +29,7 @@ struct RhythmCanvas: View {
                     ScrollView(.horizontal) {
                         ZStack(alignment: .topLeading) {
                             Canvas { context, size in
-                                drawGrid(context: &context, size: size, signature: signature, subdivision: state.project.subdivision, ticks: ticks, scale: scale)
+                                drawGrid(context: &context, size: size, signature: signature, subdivision: state.project.subdivision, ticks: ticks, scale: scale, showClickStripes: showClickStripes)
                                 let range = RhythmEngine.playbackRange(project: state.project)
                                 let selected = CGRect(x: Double(range.lowerBound) * scale, y: 0,
                                                       width: Double(range.count) * scale, height: 3)
@@ -76,7 +77,7 @@ struct RhythmCanvas: View {
             }
         }
     }
-    private func drawGrid(context: inout GraphicsContext, size: CGSize, signature: TimeSignature, subdivision: Subdivision, ticks: Int64, scale: Double) {
+    private func drawGrid(context: inout GraphicsContext, size: CGSize, signature: TimeSignature, subdivision: Subdivision, ticks: Int64, scale: Double, showClickStripes: Bool) {
         let step = RhythmEngine.gridStep(signature: signature, subdivision: subdivision)
         context.fill(Path(CGRect(x: 0, y: 0, width: size.width, height: Self.rulerHeight)), with: .color(.primary.opacity(0.035)))
         for tick in stride(from: Int64(0), through: ticks, by: Int(step)) {
@@ -93,14 +94,16 @@ struct RhythmCanvas: View {
                              at: CGPoint(x: x + 5, y: 31), anchor: .leading)
             }
             if click != nil {
-                context.fill(Path(CGRect(x: x, y: 0, width: min(3, Double(step) * scale), height: size.height)),
-                             with: .color(.purple.opacity(0.5)))
                 context.fill(Path(ellipseIn: CGRect(x: x + 5, y: 54, width: 5, height: 5)), with: .color(.purple))
             }
             var path = Path()
             path.move(to: CGPoint(x: x, y: isBar ? 0 : 26))
             path.addLine(to: CGPoint(x: x, y: size.height))
-            context.stroke(path, with: .color((click != nil ? Color.purple : Color.primary).opacity(strength.lineOpacity)), lineWidth: strength.lineWidth)
+            context.stroke(path, with: .color(.primary.opacity(strength.lineOpacity)), lineWidth: strength.lineWidth)
+            if showClickStripes, click != nil {
+                context.fill(Path(CGRect(x: x, y: 0, width: min(1, Double(step) * scale), height: size.height)),
+                             with: .color(.purple.opacity(0.45)))
+            }
             if isBar && tick < ticks {
                 context.draw(Text("ТАКТ \(tick / signature.barTicks + 1)").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary), at: CGPoint(x: x + 8, y: 12), anchor: .leading)
             }
