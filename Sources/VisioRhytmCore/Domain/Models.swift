@@ -34,6 +34,11 @@ public enum Subdivision: String, Codable, CaseIterable, Sendable {
     }
 }
 
+/// Metrical importance, independent of color, playback and syllable placement.
+public enum MetricalStrength: String, Codable, CaseIterable, Sendable {
+    case primary, secondary, weak, subdivision
+}
+
 public struct Syllable: Identifiable, Codable, Hashable, Sendable {
     public var id: UUID
     public var text: String

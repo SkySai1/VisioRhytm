@@ -16,6 +16,28 @@ public enum ClickAccent: Sendable {
 
 public enum RhythmEngine {
     public static let ppq: Int64 = 480
+    // Each supported meter has its own explicit pattern of denominator beats.
+    private static let metricalPatterns: [TimeSignature: [MetricalStrength]] = [
+        .init(4, 4): [.primary, .weak, .secondary, .weak],
+        .init(3, 4): [.primary, .weak, .weak],
+        .init(6, 8): [.primary, .weak, .weak, .secondary, .weak, .weak],
+        .init(12, 8): [.primary, .weak, .weak, .secondary, .weak, .weak,
+                      .secondary, .weak, .weak, .secondary, .weak, .weak]
+    ]
+    public static func beatStrengths(signature: TimeSignature) -> [MetricalStrength] {
+        // Imported meters without a defined grouping get only a downbeat accent.
+        // No compound grouping or secondary accents are inferred from the numerator.
+        metricalPatterns[signature] ?? [.primary] + Array(repeating: .weak, count: max(0, signature.numerator - 1))
+    }
+    public static func metricalStrength(at ticks: Int64, signature: TimeSignature) -> MetricalStrength {
+        let local = max(0, ticks) % signature.barTicks
+        guard local % signature.beatTicks == 0 else { return .subdivision }
+        return beatStrengths(signature: signature)[Int(local / signature.beatTicks)]
+    }
+    /// Preserve every denominator beat even with a coarser requested grid.
+    public static func gridStep(signature: TimeSignature, subdivision: Subdivision) -> Int64 {
+        min(signature.beatTicks, subdivision.ticks)
+    }
     public static func playbackRange(project: Project) -> Range<Int64> {
         let bar = project.timeSignature.barTicks
         return Int64(project.metronomeSettings.loopStartBar - 1) * bar ..< Int64(project.metronomeSettings.loopEndBar) * bar
@@ -52,17 +74,16 @@ public enum RhythmEngine {
         return (Int(ticks / signature.barTicks) + 1, Int((ticks % signature.barTicks) / signature.beatTicks) + 1)
     }
     public static func accent(at ticks: Int64, signature: TimeSignature) -> ClickAccent {
-        let local = ticks % signature.barTicks
-        if local == 0 { return .primary }
-        if local % signature.beatTicks != 0 { return .subdivision }
-        let beat = local / signature.beatTicks
-        if signature.denominator == 8 && signature.numerator % 3 == 0 && beat % 3 == 0 { return .secondary }
-        if signature.numerator == 4 && beat == 2 { return .secondary }
-        return .regular
+        switch metricalStrength(at: ticks, signature: signature) {
+        case .primary: .primary
+        case .secondary: .secondary
+        case .weak: .regular
+        case .subdivision: .subdivision
+        }
     }
     /// The beat always remains audible even when the visual grid is coarser.
     public static func clickStep(signature: TimeSignature, subdivision: Subdivision, preview: Bool) -> Int64 {
-        preview ? min(signature.beatTicks, subdivision.ticks) : signature.beatTicks
+        preview ? gridStep(signature: signature, subdivision: subdivision) : signature.beatTicks
     }
     /// Onsets shown by Canvas use the same step and accents as the audio plan.
     public static func clickAccent(at ticks: Int64, project: Project) -> ClickAccent? {

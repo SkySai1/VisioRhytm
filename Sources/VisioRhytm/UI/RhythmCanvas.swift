@@ -57,7 +57,7 @@ struct RhythmCanvas: View {
                                 let position = state.metronome.currentTicks()
                                 Canvas { context, size in
                                     guard position <= Double(ticks) else { return }
-                                    let columnTicks = min(signature.beatTicks, state.project.subdivision.ticks)
+                                    let columnTicks = RhythmEngine.gridStep(signature: signature, subdivision: state.project.subdivision)
                                     let column = floor(position / Double(columnTicks)) * Double(columnTicks)
                                     let rect = CGRect(x: column * scale, y: Self.rulerHeight, width: Double(columnTicks) * scale, height: size.height - Self.rulerHeight)
                                     let range = RhythmEngine.playbackRange(project: state.project)
@@ -77,34 +77,35 @@ struct RhythmCanvas: View {
         }
     }
     private func drawGrid(context: inout GraphicsContext, size: CGSize, signature: TimeSignature, subdivision: Subdivision, ticks: Int64, scale: Double) {
-        let step = min(signature.beatTicks, subdivision.ticks)
+        let step = RhythmEngine.gridStep(signature: signature, subdivision: subdivision)
         context.fill(Path(CGRect(x: 0, y: 0, width: size.width, height: Self.rulerHeight)), with: .color(.primary.opacity(0.035)))
         for tick in stride(from: Int64(0), through: ticks, by: Int(step)) {
             let isBar = tick % signature.barTicks == 0
             let isBeat = tick % signature.beatTicks == 0
             let x = Double(tick) * scale
+            let strength = RhythmEngine.metricalStrength(at: tick, signature: signature)
             let click = RhythmEngine.clickAccent(at: tick, project: state.project)
-            if let click {
-                let opacity: Double = switch click {
-                case .primary: 0.15
-                case .secondary: 0.12
-                case .regular: 0.085
-                case .subdivision: 0.055
-                }
+            if tick < ticks {
+                // Strength covers the entire canvas; purple independently marks audible columns.
+                let color: Color = click == nil ? .blue : .purple
                 context.fill(Path(CGRect(x: x, y: 26, width: Double(step) * scale, height: size.height - 26)),
-                             with: .color(.purple.opacity(opacity)))
+                             with: .color(color.opacity(strength.columnOpacity)))
+                context.draw(Text(Image(systemName: strength.symbol)).font(.system(size: 7, weight: strength.labelWeight)).foregroundStyle(.secondary),
+                             at: CGPoint(x: x + 5, y: 31), anchor: .leading)
+            }
+            if click != nil {
                 context.fill(Path(ellipseIn: CGRect(x: x + 5, y: 54, width: 5, height: 5)), with: .color(.purple))
             }
             var path = Path()
             path.move(to: CGPoint(x: x, y: isBar ? 0 : 26))
             path.addLine(to: CGPoint(x: x, y: size.height))
-            context.stroke(path, with: .color(click != nil ? .purple.opacity(0.4) : .primary.opacity(isBar ? 0.28 : isBeat ? 0.15 : 0.065)), lineWidth: isBar ? 1.5 : 1)
+            context.stroke(path, with: .color((click != nil ? Color.purple : Color.primary).opacity(strength.lineOpacity)), lineWidth: strength.lineWidth)
             if isBar && tick < ticks {
                 context.draw(Text("ТАКТ \(tick / signature.barTicks + 1)").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary), at: CGPoint(x: x + 8, y: 12), anchor: .leading)
             }
             if tick < ticks, isBeat || Double(step) * scale >= 20 {
                 let label = RhythmEngine.gridLabel(ticks: tick, signature: signature, subdivision: subdivision)
-                context.draw(Text(label).font(.system(size: 11, weight: isBeat ? .semibold : .regular)).foregroundStyle(.secondary), at: CGPoint(x: x + 5, y: 42), anchor: .leading)
+                context.draw(Text(label).font(.system(size: 11, weight: strength.labelWeight)).foregroundStyle(isBeat ? .primary : .secondary), at: CGPoint(x: x + 5, y: 42), anchor: .leading)
             }
         }
     }

@@ -52,6 +52,7 @@ struct MainWindow: View {
                     RhythmCanvas(state: state)
                     Divider()
                     VStack(alignment: .leading, spacing: 8) {
+                        MetricalStrengthLegend(signature: state.project.timeSignature)
                         HStack(spacing: 18) {
                             Label("Клик метронома", systemImage: "circle.fill").foregroundStyle(.purple)
                             Label("Текущая позиция", systemImage: "line.diagonal").foregroundStyle(.teal)
