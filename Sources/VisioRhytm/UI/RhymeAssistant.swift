@@ -20,6 +20,7 @@ final class RhymeAssistant {
     private(set) var compressionStep = 0
     private(set) var lastPromptTokens: Int?
     private(set) var lastOutputTokens: Int?
+    private(set) var lastThinkingCharacters = 0
     private(set) var contextError: String?
     private(set) var editorText = ""
     private(set) var editorSelection = NSRange(location: NSNotFound, length: 0)
@@ -36,15 +37,23 @@ final class RhymeAssistant {
         self.client = client; self.defaults = defaults
         if let settings { self.settings = settings }
         else if let data = defaults?.data(forKey: Self.settingsKey),
-                let saved = try? JSONDecoder().decode(OllamaSettings.self, from: data),
-                (try? saved.validate(requireModel: false)) != nil { self.settings = saved }
+                var saved = try? JSONDecoder().decode(OllamaSettings.self, from: data),
+                (try? saved.validate(requireModel: false)) != nil {
+            if saved.thinking == .automatic {
+                saved.thinking = .disabled
+                if let migrated = try? JSONEncoder().encode(saved) { defaults?.set(migrated, forKey: Self.settingsKey) }
+            }
+            self.settings = saved
+        }
         else { self.settings = OllamaSettings() }
     }
     var contextUsage: RhymeContextUsage {
         RhymePromptBuilder.usage(messages: RhymePromptBuilder.messages(lyrics: editorText, target: target, settings: settings, session: session), settings: settings)
     }
     var canCompress: Bool { settings.enabled && settings.mode == .fullSong && session.canCompress && !isCompressing }
-    func applySettings(_ newSettings: OllamaSettings) throws {
+    func applySettings(_ suppliedSettings: OllamaSettings) throws {
+        var newSettings = suppliedSettings
+        if newSettings.thinking == .automatic { newSettings.thinking = .disabled }
         try newSettings.validate(requireModel: newSettings.enabled)
         let reset = settings.serverURL != newSettings.serverURL || settings.model != newSettings.model
             || settings.mode != newSettings.mode || settings.systemPrompt != newSettings.systemPrompt
@@ -83,6 +92,7 @@ final class RhymeAssistant {
     func resetContext() {
         cancel(); session = .init(); presentation = .init(); contextError = nil
         lastPromptTokens = nil; lastOutputTokens = nil
+        lastThinkingCharacters = 0
         target = nil; ignoredDraft = nil; dismissedTarget = nil
     }
     private func schedule(immediate: Bool) {
@@ -107,9 +117,10 @@ final class RhymeAssistant {
                 guard self.requestID == id else { return }
                 let suggestions = try RhymePromptBuilder.suggestions(from: reply.message.content, target: target, count: settings.suggestionCount)
                 if settings.mode == .fullSong {
-                    self.session.turns.append(.init(request: RhymePromptBuilder.request(target: target, lyrics: text, settings: settings), response: reply.message.content))
+                    self.session.turns.append(.init(request: RhymePromptBuilder.request(target: target, lyrics: text, settings: settings), response: try RhymePromptBuilder.response(suggestions: suggestions)))
                 }
                 self.lastPromptTokens = reply.promptEvalCount; self.lastOutputTokens = reply.evalCount
+                self.lastThinkingCharacters = reply.thinkingCharacters
                 self.presentation = .init(lineNumber: target.lineIndex + 1, prefix: target.prefix, suggestions: suggestions)
             } catch is CancellationError {} catch {
                 guard let self, self.requestID == id else { return }
@@ -135,6 +146,7 @@ final class RhymeAssistant {
         var settings = settings
         settings.options.temperature = 0.2
         settings.options.stop = []
+        settings.thinking = .disabled
         // A concise memory has a bounded reserve, regardless of completion length settings.
         settings.options.numPredict = min(512, settings.options.numPredict)
         task = Task { [weak self] in

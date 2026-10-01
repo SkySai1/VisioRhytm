@@ -17,6 +17,11 @@ private final class StubURLProtocol: URLProtocol, @unchecked Sendable {
             """
         case "missing.test": status = 404; content = "{\"error\":\"model not found\"}"
         case "broken.test": status = 200; content = "not JSON"
+        case "thinking.test":
+            status = 200
+            content = """
+            {"message":{"role":"assistant","content":"","thinking":"Нужно тщательно разобрать смысл и рифмы"},"done":true,"done_reason":"length","prompt_eval_count":320,"eval_count":256}
+            """
         default:
             status = 200
             content = """
@@ -29,6 +34,19 @@ private final class StubURLProtocol: URLProtocol, @unchecked Sendable {
         client?.urlProtocolDidFinishLoading(self)
     }
     override func stopLoading() {}
+}
+
+@Test func reasoningExhaustionExplainsThinkingInsteadOfSuggestingLargerResponses() async throws {
+    var settings = OllamaSettings()
+    settings.model = "poet"; settings.serverURL = "http://thinking.test"
+    do {
+        _ = try await stubClient().chat(messages: [], settings: settings, format: .suggestions(3))
+        Issue.record("An exhausted reasoning-only reply must be rejected")
+    } catch {
+        #expect(error.localizedDescription.contains("256"))
+        #expect(error.localizedDescription.contains("Выключите Thinking"))
+        #expect(!error.localizedDescription.contains("Увеличьте"))
+    }
 }
 
 private func stubClient() -> OllamaClient {
@@ -76,21 +94,38 @@ private func stubClient() -> OllamaClient {
 func liveOllamaReturnsRhymeAndCompressedMemoryAsJSON() async throws {
     var settings = OllamaSettings()
     settings.model = ProcessInfo.processInfo.environment["VISIORHYTM_OLLAMA_MODEL"] ?? "qwen3.5:4b"
-    settings.thinking = .disabled
-    settings.suggestionCount = 2
-    settings.options.numPredict = 512
+    settings.suggestionCount = 3
+    // Reproduce the saved settings behind the bug, without overriding Thinking in the test.
+    settings.thinking = .automatic
+    settings.options.numCtx = 16000
+    settings.options.numPredict = 5000
     settings.options.seed = 42
-    settings.mode = .fullSong
     let client = OllamaClient()
     #expect(try await client.models(settings: settings).contains(settings.model))
-    let text = "В ночи нам светит лунный свет\nИ мы идём навстречу"
+    let text = "Война на невидимом фронте\nГде враг растворяется в сети\nМы строим защиту сегодня\nЧтоб завтра систему"
     let target = try #require(RhymeTarget.find(in: text, selection: NSRange(location: (text as NSString).length, length: 0)))
-    let messages = RhymePromptBuilder.messages(lyrics: text, target: target, settings: settings, session: .init())
-    let reply = try await client.chat(messages: messages, settings: settings, format: .suggestions(2))
-    let suggestions = try RhymePromptBuilder.suggestions(from: reply.message.content, target: target, count: 2)
-    #expect(suggestions.count == 2)
-    #expect(reply.promptEvalCount != nil)
-    let compression = try await client.chat(messages: RhymePromptBuilder.compressionMessages(previousSummary: "", chunk: messages.map(\.content).joined(separator: "\n") + reply.message.content), settings: settings, format: .summary)
+    var session = RhymeSession()
+    for mode in [RhymeContextMode.nearbyLines, .fullSong] {
+        settings.mode = mode
+        // Two requests in full mode exercise the actual history sent back to the model.
+        for index in 1...(mode == .fullSong ? 2 : 1) {
+            let messages = RhymePromptBuilder.messages(lyrics: text, target: target, settings: settings, session: session)
+            let reply = try await client.chat(messages: messages, settings: settings, format: .suggestions(3))
+            let suggestions = try RhymePromptBuilder.suggestions(from: reply.message.content, target: target, count: 3)
+            #expect(suggestions.count == 3)
+            #expect(reply.promptEvalCount != nil)
+            #expect(try #require(reply.evalCount) <= 256)
+            #expect(reply.thinkingCharacters == 0)
+            if mode == .fullSong {
+                session.turns.append(.init(request: RhymePromptBuilder.request(target: target, lyrics: text, settings: settings),
+                    response: try RhymePromptBuilder.response(suggestions: suggestions)))
+            }
+            print("Ollama \(settings.model) \(mode) #\(index): prompt=\(reply.promptEvalCount ?? 0), generated=\(reply.evalCount ?? 0), thinkingCharacters=\(reply.thinkingCharacters), JSON suggestions=\(suggestions.count)")
+        }
+    }
+    let compression = try await client.chat(messages: RhymePromptBuilder.compressionMessages(previousSummary: "", chunk: session.transcript), settings: settings, format: .summary)
     #expect(!(try RhymePromptBuilder.summary(from: compression.message.content)).isEmpty)
-    print("Ollama \(settings.model): \(suggestions.count) JSON suggestions; prompt=\(reply.promptEvalCount ?? 0), output=\(reply.evalCount ?? 0); JSON compression passed")
+    #expect(try #require(compression.evalCount) <= 512)
+    #expect(compression.thinkingCharacters == 0)
+    print("Ollama JSON compression: generated=\(compression.evalCount ?? 0), thinkingCharacters=\(compression.thinkingCharacters)")
 }

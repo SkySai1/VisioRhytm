@@ -82,10 +82,10 @@ func unicodeCompletionPreservesIndentationAndOtherLines(newline: String) throws 
     let object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: Any])
     let options = try #require(object["options"] as? [String: Any])
     #expect(options["num_ctx"] as? Int == 8192)
-    #expect(options["num_predict"] as? Int == 512)
+    #expect(options["num_predict"] as? Int == 256)
     #expect(options["top_k"] as? Int == 40)
     #expect(object["stream"] as? Bool == false)
-    #expect(object["think"] == nil)
+    #expect(object["think"] as? Bool == false)
     let schema = try #require(object["format"] as? [String: Any])
     #expect(schema["required"] as? [String] == ["suggestions"])
     #expect(try JSONDecoder().decode(OllamaSettings.self, from: JSONEncoder().encode(settings)) == settings)
@@ -93,6 +93,41 @@ func unicodeCompletionPreservesIndentationAndOtherLines(newline: String) throws 
     #expect(throws: RhymeError.self) { try settings.validate() }
     settings.options.numPredict = 512; settings.options.topP = .nan
     #expect(throws: RhymeError.self) { try settings.validate() }
+}
+
+@Test(arguments: [1, 3, 10], [RhymeContextMode.nearbyLines, .fullSong])
+func highSavedTokenLimitCannotExpandRhymeResponse(count: Int, mode: RhymeContextMode) throws {
+    var settings = OllamaSettings()
+    settings.options.numCtx = 16000; settings.options.numPredict = 5000
+    settings.suggestionCount = count; settings.mode = mode; settings.model = "poet"
+    // Old installations saved automatic, which must no longer inherit Qwen's thinking default.
+    settings.thinking = .automatic
+    let request = OllamaChatRequest(messages: [], settings: settings, format: .suggestions(count))
+    let json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: Any])
+    #expect(json["think"] as? Bool == false)
+    #expect(request.options.numPredict == 64 + count * 64)
+    #expect(request.options.numPredict <= 704)
+    let usage = RhymePromptBuilder.usage(messages: [], settings: settings)
+    #expect(usage.reservedOutput == request.options.numPredict)
+    #expect(settings.options.numPredict == 5000)
+    settings.thinking = .enabled
+    let explicit = OllamaChatRequest(messages: [], settings: settings, format: .suggestions(count))
+    #expect(explicit.think == true)
+    #expect(explicit.options.numPredict == request.options.numPredict)
+    settings.options.numPredict = 64
+    #expect(OllamaChatRequest(messages: [], settings: settings, format: .suggestions(count)).options.numPredict == 64)
+    #expect(OllamaChatRequest(messages: [], settings: settings, format: .summary).options.numPredict == 64)
+}
+
+@Test func oversizedEndingsAndSummariesAreRejectedWithoutTruncatingWords() throws {
+    let text = "Я ищу"
+    let target = try #require(RhymeTarget.find(in: text, selection: endSelection(text)))
+    let answer = try RhymePromptBuilder.response(suggestions: [String(repeating: "слово ", count: 30),
+        "один два три четыре пять шесть семь восемь девять", "ночной рассвет"])
+    #expect(try RhymePromptBuilder.suggestions(from: answer, target: target, count: 3) == ["ночной рассвет"])
+    let summary = String(repeating: "память ", count: 300)
+    let data = try JSONSerialization.data(withJSONObject: ["summary": summary])
+    #expect(throws: RhymeError.self) { try RhymePromptBuilder.summary(from: String(decoding: data, as: UTF8.self)) }
 }
 
 @Test func contextBudgetAndChunkingNeverDropUnicodeText() {

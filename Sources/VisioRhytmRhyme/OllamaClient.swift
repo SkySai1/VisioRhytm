@@ -12,17 +12,41 @@ public struct OllamaReply: Decodable, Sendable {
     public let promptEvalCount: Int?
     public let evalCount: Int?
     public let doneReason: String?
-    public init(content: String, promptTokens: Int? = nil, outputTokens: Int? = nil) {
+    public let thinkingCharacters: Int
+    public init(content: String, promptTokens: Int? = nil, outputTokens: Int? = nil, thinkingCharacters: Int = 0) {
         message = .init("assistant", content); done = true
         promptEvalCount = promptTokens; evalCount = outputTokens; doneReason = nil
+        self.thinkingCharacters = thinkingCharacters
     }
     enum CodingKeys: String, CodingKey {
         case message, done, promptEvalCount = "prompt_eval_count", evalCount = "eval_count", doneReason = "done_reason"
+    }
+    private enum MessageKeys: String, CodingKey { case role, content, thinking }
+    public init(from decoder: any Decoder) throws {
+        let root = try decoder.container(keyedBy: CodingKeys.self)
+        let payload = try root.nestedContainer(keyedBy: MessageKeys.self, forKey: .message)
+        message = .init(try payload.decode(String.self, forKey: .role), try payload.decode(String.self, forKey: .content))
+        // Keep diagnostics, never retain or send a reasoning trace in the song history.
+        thinkingCharacters = try payload.decodeIfPresent(String.self, forKey: .thinking)?.count ?? 0
+        done = try root.decode(Bool.self, forKey: .done)
+        promptEvalCount = try root.decodeIfPresent(Int.self, forKey: .promptEvalCount)
+        evalCount = try root.decodeIfPresent(Int.self, forKey: .evalCount)
+        doneReason = try root.decodeIfPresent(String.self, forKey: .doneReason)
     }
 }
 
 public enum OllamaResponseSchema: Encodable, Sendable {
     case suggestions(Int), summary
+    public static let maximumSuggestionCharacters = 80
+    public static let maximumSuggestionWords = 8
+    public static let maximumSummaryCharacters = 1200
+    /// The configured Max tokens is an upper bound, not a target answer length.
+    public func tokenLimit(settings: OllamaSettings) -> Int {
+        switch self {
+        case .suggestions(let count): min(settings.options.numPredict, 64 + min(10, max(1, count)) * 64)
+        case .summary: min(settings.options.numPredict, 512)
+        }
+    }
     private enum Key: String, CodingKey { case type, properties, required, additionalProperties, suggestions, summary, items, minItems, maxItems, maxLength }
     public func encode(to encoder: any Encoder) throws {
         var root = encoder.container(keyedBy: Key.self)
@@ -38,11 +62,12 @@ public enum OllamaResponseSchema: Encodable, Sendable {
             try array.encode(count, forKey: .maxItems)
             var items = array.nestedContainer(keyedBy: Key.self, forKey: .items)
             try items.encode("string", forKey: .type)
-            try items.encode(300, forKey: .maxLength)
+            try items.encode(Self.maximumSuggestionCharacters, forKey: .maxLength)
         case .summary:
             try root.encode(["summary"], forKey: .required)
             var summary = properties.nestedContainer(keyedBy: Key.self, forKey: .summary)
             try summary.encode("string", forKey: .type)
+            try summary.encode(Self.maximumSummaryCharacters, forKey: .maxLength)
         }
     }
 }
@@ -58,7 +83,9 @@ public struct OllamaChatRequest: Encodable, Sendable {
     public init(messages: [OllamaMessage], settings: OllamaSettings, format: OllamaResponseSchema) {
         model = settings.model.trimmingCharacters(in: .whitespacesAndNewlines)
         self.messages = messages; self.format = format
-        options = settings.options; keepAlive = settings.keepAlive; think = settings.thinking.requestValue
+        var boundedOptions = settings.options
+        boundedOptions.numPredict = format.tokenLimit(settings: settings)
+        options = boundedOptions; keepAlive = settings.keepAlive; think = settings.thinking.requestValue
     }
     enum CodingKeys: String, CodingKey { case model, messages, stream, format, options, keepAlive = "keep_alive", think }
 }
@@ -92,7 +119,10 @@ public struct OllamaClient: OllamaServing, Sendable {
         do { reply = try JSONDecoder().decode(OllamaReply.self, from: data) }
         catch { throw RhymeError.invalidResponse("Ожидался JSON message.content. Проверьте совместимость сервера с /api/chat.") }
         guard reply.done else { throw RhymeError.invalidResponse("Генерация не завершена.") }
-        guard reply.doneReason != "length" else { throw RhymeError.invalidResponse("Достигнут Max tokens. Увеличьте лимит ответа.") }
+        guard reply.doneReason != "length" else {
+            let detail = reply.thinkingCharacters > 0 ? "Рассуждения заняли \(reply.thinkingCharacters) символов. Выключите Thinking." : "Уменьшите число вариантов или проверьте промпт и модель."
+            throw RhymeError.invalidResponse("Достигнут лимит короткого ответа (\(format.tokenLimit(settings: settings)) токенов). \(detail)")
+        }
         return reply
     }
     private func send(settings: OllamaSettings, path: String, body: Data?) async throws -> Data {

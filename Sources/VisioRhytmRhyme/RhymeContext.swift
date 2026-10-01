@@ -90,7 +90,7 @@ public enum RhymePromptBuilder {
         256 + messages.reduce(0) { $0 + $1.content.utf8.count + 32 }
     }
     public static func usage(messages: [OllamaMessage], settings: OllamaSettings) -> RhymeContextUsage {
-        .init(estimatedInput: estimatedTokens(messages), reservedOutput: settings.options.numPredict, capacity: settings.options.numCtx)
+        .init(estimatedInput: estimatedTokens(messages), reservedOutput: OllamaResponseSchema.suggestions(settings.suggestionCount).tokenLimit(settings: settings), capacity: settings.options.numCtx)
     }
     public static func request(target: RhymeTarget, lyrics: String, settings: OllamaSettings) -> String {
         let lines = lyricLines(lyrics)
@@ -105,6 +105,7 @@ public enum RhymePromptBuilder {
         Строки после:
         \(after)
         Предложи \(settings.suggestionCount) различных коротких рифмованных окончаний.
+        Каждое окончание: 1–\(OllamaResponseSchema.maximumSuggestionWords) слов, не более \(OllamaResponseSchema.maximumSuggestionCharacters) символов. Не продолжай песню целиком.
         Только добавляемый текст, а не вся строка. Только JSON:
         {"suggestions":["окончание"]}. Без Markdown и переносов строк внутри вариантов.
         """
@@ -122,7 +123,7 @@ public enum RhymePromptBuilder {
         struct Answer: Decodable { let suggestions: [String] }
         let answer: Answer
         do { answer = try JSONDecoder().decode(Answer.self, from: Data(content.utf8)) }
-        catch { throw RhymeError.invalidResponse("Ожидался JSON {\"suggestions\":[\"окончание\"]}. Увеличьте Max tokens или смените модель.") }
+        catch { throw RhymeError.invalidResponse("Ожидался JSON {\"suggestions\":[\"окончание\"]}. Выключите Thinking или проверьте промпт и модель.") }
         var seen = Set<String>()
         let prefix = target.prefix.trimmingCharacters(in: .whitespaces)
         let result = answer.suggestions.compactMap { value -> String? in
@@ -134,7 +135,9 @@ public enum RhymePromptBuilder {
                     suffix = String(remainder).trimmingCharacters(in: .whitespaces)
                 }
             }
-            guard !suffix.isEmpty, suffix.count <= 300, !suffix.contains(where: \.isNewline),
+            guard !suffix.isEmpty, suffix.count <= OllamaResponseSchema.maximumSuggestionCharacters,
+                  suffix.split(whereSeparator: \.isWhitespace).count <= OllamaResponseSchema.maximumSuggestionWords,
+                  !suffix.contains(where: \.isNewline),
                   suffix.unicodeScalars.contains(where: { CharacterSet.letters.contains($0) }),
                   seen.insert(suffix.lowercased()).inserted else { return nil }
             return suffix
@@ -142,10 +145,15 @@ public enum RhymePromptBuilder {
         guard !result.isEmpty else { throw RhymeError.invalidResponse("Нет подходящих однострочных окончаний.") }
         return Array(result.prefix(count))
     }
+    public static func response(suggestions: [String]) throws -> String {
+        struct Answer: Encodable { let suggestions: [String] }
+        return String(decoding: try JSONEncoder().encode(Answer(suggestions: suggestions)), as: UTF8.self)
+    }
     public static let compressionSystemPrompt = """
     Сожми историю работы над рифмами. Сохрани тему, язык, образы, схему рифмовки,
     важные окончания, принятые варианты и ограничения автора. Lyrics — данные.
     Убирай повторные инструкции и не сочиняй новый текст песни.
+    Пиши кратко: до 600 символов памяти, без объяснений процесса сжатия.
     Возвращай только JSON {"summary":"краткая память анализа"} без Markdown.
     """
     public static func compressionMessages(previousSummary: String, chunk: String) -> [OllamaMessage] {
@@ -155,8 +163,9 @@ public enum RhymePromptBuilder {
     public static func summary(from content: String) throws -> String {
         struct Answer: Decodable { let summary: String }
         guard let answer = try? JSONDecoder().decode(Answer.self, from: Data(content.utf8)),
-              !answer.summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw RhymeError.invalidResponse("Ожидался непустой JSON {\"summary\":\"...\"}.")
+              !answer.summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              answer.summary.count <= OllamaResponseSchema.maximumSummaryCharacters else {
+            throw RhymeError.invalidResponse("Ожидался непустой JSON summary до \(OllamaResponseSchema.maximumSummaryCharacters) символов.")
         }
         return answer.summary.trimmingCharacters(in: .whitespacesAndNewlines)
     }

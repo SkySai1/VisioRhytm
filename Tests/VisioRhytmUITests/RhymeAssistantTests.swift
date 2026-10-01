@@ -9,22 +9,63 @@ import VisioRhytmRhyme
 private actor FakeOllama: OllamaServing {
     var calls: [[OllamaMessage]] = []
     var summaries = 0
+    var summaryThinking: [OllamaThinking] = []
     var delay = 0
     var malformedCompression = false
+    var responseContent: String?
+    var thinkingCharacters = 0
     func configure(delay: Int = 0, malformedCompression: Bool = false) { self.delay = delay; self.malformedCompression = malformedCompression }
+    func configureResponse(_ content: String, thinkingCharacters: Int) { responseContent = content; self.thinkingCharacters = thinkingCharacters }
     func models(settings: OllamaSettings) async throws -> [String] { ["poet"] }
     func chat(messages: [OllamaMessage], settings: OllamaSettings, format: OllamaResponseSchema) async throws -> OllamaReply {
         calls.append(messages)
         if delay > 0 { try? await Task.sleep(for: .milliseconds(delay)) }
         switch format {
         case .suggestions:
-            return .init(content: "{\"suggestions\":[\"лунный свет\",\"счастливый рассвет\"]}", promptTokens: 200, outputTokens: 20)
+            return .init(content: responseContent ?? "{\"suggestions\":[\"лунный свет\",\"счастливый рассвет\"]}", promptTokens: 200, outputTokens: 20, thinkingCharacters: thinkingCharacters)
         case .summary:
             summaries += 1
+            summaryThinking.append(settings.thinking)
             return .init(content: malformedCompression ? "bad JSON" : "{\"summary\":\"Образы ночи и света, рифма свет/рассвет.\"}")
         }
     }
     var count: Int { calls.count }
+}
+
+@Test @MainActor func legacyAutomaticThinkingMigratesWithoutDiscardingOtherSettings() throws {
+    let suite = UUID().uuidString
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    var old = OllamaSettings()
+    old.model = "qwen3.5:4b"; old.thinking = .automatic
+    old.options.numCtx = 16000; old.options.numPredict = 5000
+    old.systemPrompt = "Мой промпт, только JSON."
+    defaults.set(try JSONEncoder().encode(old), forKey: RhymeAssistant.settingsKey)
+    let restored = RhymeAssistant(client: FakeOllama(), defaults: defaults)
+    old.thinking = .disabled
+    #expect(restored.settings == old)
+    let stored = try #require(defaults.data(forKey: RhymeAssistant.settingsKey))
+    #expect(try JSONDecoder().decode(OllamaSettings.self, from: stored) == old)
+    old.thinking = .enabled
+    try restored.applySettings(old)
+    #expect(RhymeAssistant(client: FakeOllama(), defaults: defaults).settings.thinking == .enabled)
+}
+
+@Test @MainActor func fullSongHistoryRetainsOnlyValidatedShortSuggestions() async throws {
+    let client = FakeOllama()
+    let raw = try JSONSerialization.data(withJSONObject: ["suggestions": ["лунный свет", String(repeating: "слишком длинное окончание ", count: 50)], "explanation": String(repeating: "анализ ", count: 1000)])
+    await client.configureResponse(String(decoding: raw, as: UTF8.self), thinkingCharacters: 300)
+    let assistant = configuredAssistant(client, full: true)
+    let text = "Ночь дарит нам"
+    assistant.updateEditor(text: text, selection: .init(location: (text as NSString).length, length: 0)); assistant.refresh()
+    try await waitUntil { assistant.session.turns.count == 1 }
+    #expect(assistant.presentation.suggestions == ["лунный свет"])
+    #expect(assistant.session.turns[0].response == "{\"suggestions\":[\"лунный свет\"]}")
+    #expect(assistant.lastThinkingCharacters == 300)
+    assistant.refresh()
+    try await waitUntil { assistant.session.turns.count == 2 }
+    let calls = await client.calls
+    #expect(!calls.last!.contains { $0.content.contains("слишком длинное") || $0.content.contains("анализ анализ") })
 }
 
 @MainActor private func configuredAssistant(_ client: FakeOllama, full: Bool = false) -> RhymeAssistant {
@@ -96,6 +137,9 @@ private actor FakeOllama: OllamaServing {
 @Test @MainActor func compressionIsAtomicAndRetainsHistoryOnBadJSON() async throws {
     let client = FakeOllama()
     let assistant = configuredAssistant(client, full: true)
+    var settings = assistant.settings
+    settings.thinking = .enabled
+    try assistant.applySettings(settings)
     let text = "Ночь дарит нам"
     assistant.updateEditor(text: text, selection: .init(location: (text as NSString).length, length: 0)); assistant.refresh()
     try await waitUntil { assistant.session.turns.count == 1 }
@@ -112,6 +156,8 @@ private actor FakeOllama: OllamaServing {
     #expect(!assistant.session.summary.isEmpty)
     #expect(assistant.editorText == text)
     #expect(assistant.contextError == nil)
+    #expect(await client.summaryThinking == [.disabled, .disabled])
+    #expect(assistant.settings.thinking == .enabled)
     assistant.refresh()
     try await waitUntil { assistant.session.turns.count == 1 }
     let calls = await client.calls

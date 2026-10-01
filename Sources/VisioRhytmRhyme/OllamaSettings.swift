@@ -7,7 +7,9 @@ public enum RhymeContextMode: String, Codable, CaseIterable, Sendable {
 public enum OllamaThinking: String, Codable, CaseIterable, Sendable {
     case automatic, enabled, disabled
     public var requestValue: Bool? {
-        switch self { case .automatic: nil; case .enabled: true; case .disabled: false }
+        // Legacy automatic used the model default, which enables long Qwen reasoning.
+        // Rhyme completion needs short answers; reasoning now requires an explicit opt-in.
+        switch self { case .automatic, .disabled: false; case .enabled: true }
     }
 }
 
@@ -53,7 +55,7 @@ public struct OllamaSettings: Codable, Equatable, Sendable {
     public var debounceMilliseconds = 800
     public var timeoutSeconds = 180.0
     public var keepAlive = "5m"
-    public var thinking: OllamaThinking = .automatic
+    public var thinking: OllamaThinking = .disabled
     public var systemPrompt = Self.defaultSystemPrompt
     public var options = OllamaOptions()
     public init() {}

@@ -54,6 +54,8 @@ struct RhymeSettingsView: View {
                 Section("Контекст и генерация") {
                     numberField("Контекстное окно · num_ctx", value: $draft.options.numCtx)
                     numberField("Max tokens · num_predict", value: $draft.options.numPredict)
+                    Text("Лимит короткого ответа: \(OllamaResponseSchema.suggestions(draft.suggestionCount).tokenLimit(settings: draft)) токенов. Max tokens задаёт верхнюю границу, а не желаемую длину.")
+                        .font(.caption).foregroundStyle(.secondary)
                     decimalField("temperature", value: $draft.options.temperature)
                     numberField("top_k", value: $draft.options.topK)
                     decimalField("top_p", value: $draft.options.topP)
@@ -62,11 +64,10 @@ struct RhymeSettingsView: View {
                     numberField("repeat_last_n", value: $draft.options.repeatLastN)
                     numberField("seed (-1 — случайный)", value: $draft.options.seed)
                     Picker("Thinking", selection: $draft.thinking) {
-                        Text("По умолчанию модели").tag(OllamaThinking.automatic)
                         Text("Включён").tag(OllamaThinking.enabled)
                         Text("Выключен").tag(OllamaThinking.disabled)
                     }
-                    Text("Для быстрых подсказок у reasoning-моделей можно выключить Thinking.").font(.caption).foregroundStyle(.secondary)
+                    Text("По умолчанию рассуждения выключены. При включении они расходуют тот же ограниченный бюджет ответа; короткий JSON может не успеть сформироваться.").font(.caption).foregroundStyle(.secondary)
                     TextField("keep_alive", text: $draft.keepAlive)
                     decimalField("Таймаут, секунды", value: $draft.timeoutSeconds)
                     Text("Stop: одна последовательность на строку").font(.caption)
@@ -90,6 +91,7 @@ struct RhymeSettingsView: View {
                         draft.enabled = assistant.settings.enabled
                         draft.options.stop = stopText.components(separatedBy: "\n").filter { !$0.isEmpty }
                         try assistant.applySettings(draft)
+                        draft = assistant.settings
                         validationError = nil; message = "Настройки сохранены."
                     } catch { validationError = error.localizedDescription }
                 }.buttonStyle(.borderedProminent)
@@ -126,7 +128,10 @@ struct RhymeContextPanel: View {
             Text("≈ \(usage.total) / \(usage.capacity) токенов · оценка с резервом ответа")
                 .font(.caption2).foregroundStyle(usage.isFull ? .orange : .secondary).monospacedDigit()
             if let input = assistant.lastPromptTokens, let output = assistant.lastOutputTokens {
-                Text("Последний ответ: вход \(input), выход \(output) токенов").font(.caption2).foregroundStyle(.secondary)
+                Text("Последний запрос: вход \(input), генерация \(output) токенов").font(.caption2).foregroundStyle(.secondary)
+                if assistant.lastThinkingCharacters > 0 {
+                    Text("Генерация включает рассуждения: \(assistant.lastThinkingCharacters) символов Thinking.").font(.caption2).foregroundStyle(.secondary)
+                }
             }
             HStack {
                 Button(assistant.isCompressing ? "Сжатие · часть \(assistant.compressionStep)…" : "Сжать контекст") { assistant.compressContext() }
