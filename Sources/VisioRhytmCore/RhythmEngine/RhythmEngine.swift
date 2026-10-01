@@ -64,6 +64,14 @@ public enum RhythmEngine {
     public static func clickStep(signature: TimeSignature, subdivision: Subdivision, preview: Bool) -> Int64 {
         preview ? min(signature.beatTicks, subdivision.ticks) : signature.beatTicks
     }
+    /// Onsets shown by Canvas use the same step and accents as the audio plan.
+    public static func clickAccent(at ticks: Int64, project: Project) -> ClickAccent? {
+        guard playbackRange(project: project).contains(ticks) else { return nil }
+        let step = clickStep(signature: project.timeSignature, subdivision: project.subdivision,
+                             preview: project.metronomeSettings.previewSubdivision)
+        guard ticks % step == 0 else { return nil }
+        return accent(at: ticks, signature: project.timeSignature)
+    }
     public static func gridLabel(ticks: Int64, signature: TimeSignature, subdivision: Subdivision) -> String {
         let local = ticks % signature.barTicks
         let fraction = local % signature.beatTicks

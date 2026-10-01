@@ -73,15 +73,7 @@ final class AppState {
     }
     @discardableResult func applyLyrics() -> Bool {
         do {
-            let parsed = try lyricsEngine.parse(lyricsDraft, signature: project.timeSignature)
-            // Reuse unchanged occurrences, including manual boundaries and lengths.
-            var remaining = project.lines
-            let lines = parsed.map { line in
-                if let index = remaining.firstIndex(where: { $0.originalText == line.originalText }) {
-                    return remaining.remove(at: index)
-                }
-                return line
-            }
+            let lines = try lyricsEngine.parse(lyricsDraft, signature: project.timeSignature, preserving: project.lines)
             edit { $0.lyrics = lyricsDraft; $0.lines = lines }
             return true
         } catch { errorMessage = error.localizedDescription; return false }
@@ -97,8 +89,17 @@ final class AppState {
             var line = project.lines[index]
             try change(&line)
             lyricsEngine.layout(&line)
-            project.lines[index] = line
-            project.lyrics = project.lines.map(\.originalText).joined(separator: "\n")
+            if line.originalText != project.lines[index].originalText {
+                let source = lyricsEngine.canvasLines(project.lyrics)[index]
+                let lyrics = lyricsEngine.replacingSourceLine(in: project.lyrics, at: source.sourceLineIndex, with: line.originalText)
+                var candidates = project.lines
+                candidates[index] = line
+                let rebuilt = try lyricsEngine.parse(lyrics, signature: project.timeSignature, preserving: candidates)
+                project.lyrics = lyrics
+                project.lines = rebuilt
+            } else {
+                project.lines[index] = line
+            }
             if !hasDraft { lyricsDraft = project.lyrics }
             changed()
         } catch { errorMessage = error.localizedDescription }
@@ -115,16 +116,25 @@ final class AppState {
         }
     }
     func reset(_ id: UUID) {
-        updateLine(id) { try lyricsEngine.rebuild(&$0) }
+        let visible = canvasText(forLine: id)
+        updateLine(id) { try lyricsEngine.rebuild(&$0, textForCanvas: visible) }
+    }
+    func canvasText(forLine id: UUID, replacingText text: String? = nil) -> String {
+        guard let index = project.lines.firstIndex(where: { $0.id == id }) else { return "" }
+        let source = lyricsEngine.canvasLines(project.lyrics)[index]
+        guard let text else { return source.canvasText }
+        let lyrics = lyricsEngine.replacingSourceLine(in: project.lyrics, at: source.sourceLineIndex, with: text)
+        return lyricsEngine.sourceLines(lyrics)[source.sourceLineIndex].canvasText
     }
     func editLine(_ id: UUID, text: String, manual: String?) {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               !text.contains(where: \.isNewline) else {
             errorMessage = "Введите одну непустую строку."; return
         }
+        let visible = canvasText(forLine: id, replacingText: text)
         updateLine(id) {
             $0.originalText = text.trimmingCharacters(in: .whitespaces)
-            try lyricsEngine.rebuild(&$0, manual: manual)
+            try lyricsEngine.rebuild(&$0, manual: manual, textForCanvas: visible)
         }
     }
     func togglePlayback() {

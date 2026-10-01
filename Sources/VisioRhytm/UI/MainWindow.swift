@@ -35,11 +35,17 @@ struct MainWindow: View {
                     Divider()
                     RhythmCanvas(state: state)
                     Divider()
-                    HStack(spacing: 18) {
-                        Label("Свободно", systemImage: "circle.fill").foregroundStyle(.teal)
-                        Label("Умеренно", systemImage: "circle.fill").foregroundStyle(.blue)
-                        Label("Плотно", systemImage: "circle.fill").foregroundStyle(.orange)
-                        Text("Оценка объёма текста, а не прогноз вокальной партии.").foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 18) {
+                            Label("Клик метронома", systemImage: "circle.fill").foregroundStyle(.purple)
+                            Label("Текущая позиция", systemImage: "line.diagonal").foregroundStyle(.teal)
+                            Text("Оценка объёма текста, а не прогноз вокальной партии.").foregroundStyle(.secondary)
+                        }
+                        HStack(spacing: 18) {
+                            Label("Свободно", systemImage: "circle.fill").foregroundStyle(.teal)
+                            Label("Умеренно", systemImage: "circle.fill").foregroundStyle(.blue)
+                            Label("Плотно", systemImage: "circle.fill").foregroundStyle(.orange)
+                        }
                     }.font(.caption).padding(12)
                 }.frame(minWidth: 700)
             }
@@ -128,7 +134,7 @@ struct LyricsEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Текст песни").font(.title3.bold())
-            Text("Вставьте текст: одна строка — одна дорожка. Пустые строки пропускаются.")
+            Text("Одна строка — одна дорожка. Пустые строки и текст в [] и () пропускаются.")
                 .font(.caption).foregroundStyle(.secondary)
             TextEditor(text: $state.lyricsDraft).font(.body).scrollContentBackground(.hidden)
                 .padding(8).background(.background).clipShape(RoundedRectangle(cornerRadius: 8))
@@ -155,7 +161,7 @@ struct LineControls: View {
         VStack(alignment: .leading, spacing: 5) {
             HStack {
                 Text("\(number)").foregroundStyle(.secondary).monospacedDigit()
-                Text(line.originalText).lineLimit(1).help(line.originalText)
+                Text(line.renderedText).lineLimit(1).help(line.renderedText)
                 Spacer(minLength: 0)
                 Button { state.selectedLineID = line.id } label: { Image(systemName: "pencil") }.buttonStyle(.borderless).help("Текст и границы слогов")
                 Button { state.reset(line.id) } label: { Image(systemName: "arrow.counterclockwise") }.buttonStyle(.borderless).help("Автоматическое разбиение и раскладка; сохранить длину")
@@ -215,13 +221,13 @@ struct Inspector: View {
             Text("Редактирование строки").font(.title2.bold())
             TextField("Исходный текст", text: $text).textFieldStyle(.roundedBorder)
             Toggle("Задать границы слогов вручную", isOn: $useManual)
-            Text("Разделяйте слоги знаком |, слова — пробелами. Все буквы, знаки и порядок слов должны совпадать с исходным текстом.")
+            Text("Разделяйте слоги знаком |, слова — пробелами. Используйте только текст вне [] и (): комментарии остаются в исходной строке, но не входят в слоги.")
                 .font(.callout).foregroundStyle(.secondary)
             TextField("не|ви|ди|мом", text: $boundaries).textFieldStyle(.roundedBorder).disabled(!useManual)
             Button("Получить автоматическое разбиение") {
                 var copy = line; copy.originalText = text
                 do {
-                    try LyricsEngine().rebuild(&copy)
+                    try LyricsEngine().rebuild(&copy, textForCanvas: state.canvasText(forLine: line.id, replacingText: text))
                     boundaries = LyricsEngine().manualText(for: copy)
                     validationError = nil
                 } catch { validationError = error.localizedDescription }
@@ -236,7 +242,8 @@ struct Inspector: View {
                             throw ProjectError.invalid("нужна одна непустая строка")
                         }
                         var copy = line; copy.originalText = text.trimmingCharacters(in: .whitespaces)
-                        try LyricsEngine().rebuild(&copy, manual: useManual ? boundaries : nil)
+                        try LyricsEngine().rebuild(&copy, manual: useManual ? boundaries : nil,
+                                                  textForCanvas: state.canvasText(forLine: line.id, replacingText: text))
                         state.editLine(line.id, text: text, manual: useManual ? boundaries : nil)
                         dismiss()
                     } catch { validationError = error.localizedDescription }

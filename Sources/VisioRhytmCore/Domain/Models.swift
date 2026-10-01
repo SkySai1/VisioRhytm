@@ -74,6 +74,15 @@ public struct LyricsLine: Identifiable, Codable, Hashable, Sendable {
         rhythmicLength = .init(ticks: length)
     }
     public var endTicks: Int64 { startPosition.ticks + rhythmicLength.ticks }
+    public var renderedWords: [String] {
+        var words: [String] = []
+        for syllable in syllables {
+            if syllable.wordIndex == words.count { words.append(syllable.text) }
+            else if syllable.wordIndex >= 0 && syllable.wordIndex < words.count { words[syllable.wordIndex] += syllable.text }
+        }
+        return words
+    }
+    public var renderedText: String { renderedWords.joined(separator: " ") }
 }
 
 public struct MetronomeSettings: Codable, Hashable, Sendable {

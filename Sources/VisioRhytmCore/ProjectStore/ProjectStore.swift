@@ -27,8 +27,15 @@ public struct ProjectStore: Sendable {
         struct Envelope: Decodable { let version: Int }
         let version = try JSONDecoder().decode(Envelope.self, from: data).version
         guard version == Project.currentVersion else { throw ProjectError.unsupportedVersion(version) }
-        let project = try JSONDecoder().decode(Project.self, from: data)
-        try validate(project)
+        var project = try JSONDecoder().decode(Project.self, from: data)
+        do { try validate(project) }
+        catch {
+            // Older v1 files included annotations in syllables. Validate their
+            // original schema first, then rebuild only the affected tracks.
+            try validate(project, legacyAnnotations: true)
+            project.lines = try LyricsEngine().parse(project.lyrics, signature: project.timeSignature, preserving: project.lines)
+            try validate(project)
+        }
         return project
     }
     public func load(from url: URL) throws -> Project {
@@ -42,6 +49,9 @@ public struct ProjectStore: Sendable {
         try data.write(to: url, options: .atomic)
     }
     public func validate(_ project: Project) throws {
+        try validate(project, legacyAnnotations: false)
+    }
+    private func validate(_ project: Project, legacyAnnotations: Bool) throws {
         func require(_ condition: Bool, _ reason: String) throws {
             if !condition { throw ProjectError.invalid(reason) }
         }
@@ -54,8 +64,13 @@ public struct ProjectStore: Sendable {
         try require(settings.loopStartBar >= 1 && settings.loopEndBar >= settings.loopStartBar && settings.loopEndBar <= 256, "диапазон цикла должен быть в пределах 1–256 тактов")
         try require(project.lyrics.count <= 100_000 && project.lines.count <= 500 && project.title.count <= 500, "слишком большой текст")
         try require(Set(project.lines.map(\.id)).count == project.lines.count, "повторяющиеся идентификаторы строк")
+        let lyricsEngine = LyricsEngine()
+        let sources = legacyAnnotations
+            ? lyricsEngine.sourceLines(project.lyrics).filter { !$0.originalText.isEmpty }
+            : lyricsEngine.canvasLines(project.lyrics)
+        try require(sources.map(\.originalText) == project.lines.map(\.originalText), "строки не соответствуют lyrics")
         var allIDs = Set<UUID>()
-        for line in project.lines {
+        for (line, source) in zip(project.lines, sources) {
             try require(!line.originalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, "пустая строка")
             try require((0...1_000_000).contains(line.startPosition.ticks) && (1...1_000_000).contains(line.rhythmicLength.ticks), "строка выходит за допустимую длину")
             try require(line.endTicks <= 1_000_000, "строка выходит за допустимую длину")
@@ -73,14 +88,13 @@ public struct ProjectStore: Sendable {
                     words[syllable.wordIndex] += syllable.text
                 }
             }
-            try require(words == line.originalText.split(whereSeparator: \.isWhitespace).map(String.init), "слоги не соответствуют исходному тексту")
+            let expectedText = legacyAnnotations ? source.originalText : source.canvasText
+            try require(words == expectedText.split(whereSeparator: \.isWhitespace).map(String.init), "слоги не соответствуют тексту вне скобок")
             if let manual = line.manualOverrides {
                 var rebuilt = line
-                try LyricsEngine().rebuild(&rebuilt, manual: manual)
+                try lyricsEngine.rebuild(&rebuilt, manual: manual, textForCanvas: expectedText)
                 try require(rebuilt.syllables.map(\.text) == line.syllables.map(\.text), "ручные границы не соответствуют слогам")
             }
         }
-        let originalLines = project.lyrics.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-        try require(originalLines == project.lines.map(\.originalText), "строки не соответствуют lyrics")
     }
 }

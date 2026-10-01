@@ -50,7 +50,7 @@ struct RhythmCanvas: View {
                                     LyricsTrack(line: line, number: number + 1, signature: signature, scale: scale)
                                         .frame(width: width, height: Self.rowHeight)
                                         .onTapGesture { state.selectedLineID = line.id }
-                                        .help(line.originalText + "\nНажмите для редактирования текста и слогов.")
+                                        .help(line.renderedText + "\nНажмите для редактирования текста и слогов.")
                                 }
                             }
                             TimelineView(.animation(minimumInterval: 1.0 / 60, paused: !state.metronome.isPlaying)) { _ in
@@ -83,10 +83,22 @@ struct RhythmCanvas: View {
             let isBar = tick % signature.barTicks == 0
             let isBeat = tick % signature.beatTicks == 0
             let x = Double(tick) * scale
+            let click = RhythmEngine.clickAccent(at: tick, project: state.project)
+            if let click {
+                let opacity: Double = switch click {
+                case .primary: 0.15
+                case .secondary: 0.12
+                case .regular: 0.085
+                case .subdivision: 0.055
+                }
+                context.fill(Path(CGRect(x: x, y: 26, width: Double(step) * scale, height: size.height - 26)),
+                             with: .color(.purple.opacity(opacity)))
+                context.fill(Path(ellipseIn: CGRect(x: x + 5, y: 54, width: 5, height: 5)), with: .color(.purple))
+            }
             var path = Path()
             path.move(to: CGPoint(x: x, y: isBar ? 0 : 26))
             path.addLine(to: CGPoint(x: x, y: size.height))
-            context.stroke(path, with: .color(.primary.opacity(isBar ? 0.28 : isBeat ? 0.15 : 0.065)), lineWidth: isBar ? 1.5 : 1)
+            context.stroke(path, with: .color(click != nil ? .purple.opacity(0.4) : .primary.opacity(isBar ? 0.28 : isBeat ? 0.15 : 0.065)), lineWidth: isBar ? 1.5 : 1)
             if isBar && tick < ticks {
                 context.draw(Text("ТАКТ \(tick / signature.barTicks + 1)").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary), at: CGPoint(x: x + 8, y: 12), anchor: .leading)
             }
@@ -128,7 +140,7 @@ struct LyricsTrack: View {
             context.stroke(bottom, with: .color(.primary.opacity(0.08)), lineWidth: 1)
         }
         .accessibilityElement()
-        .accessibilityLabel("Строка \(number): \(line.originalText)")
+        .accessibilityLabel("Строка \(number): \(line.renderedText)")
         .accessibilityValue(String(format: "%.2f слога на долю", RhythmEngine.density(for: line, signature: signature)))
     }
 }

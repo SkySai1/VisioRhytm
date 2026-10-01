@@ -30,27 +30,94 @@ public enum LyricsError: LocalizedError {
     case differentWords, emptySyllable, tooMuchText
     public var errorDescription: String? {
         switch self {
-        case .differentWords: "Ручное разбиение должно сохранять слова и знаки исходной строки. Используйте | только для границ слогов."
+        case .differentWords: "Ручное разбиение должно сохранять слова и знаки вне [] и (). Используйте | только для границ слогов."
         case .emptySyllable: "Пустой слог недопустим. Уберите повторяющиеся | и | на краях слова."
         case .tooMuchText: "Допустимо до 500 строк, 100 000 символов и 2 000 слогов в строке."
         }
     }
 }
 
+public struct LyricsSourceLine: Sendable {
+    public let originalText: String
+    public let canvasText: String
+    public let sourceLineIndex: Int
+}
+
 public struct LyricsEngine: Sendable {
     private let syllabifier: any SyllabificationService
     public init(syllabifier: any SyllabificationService = RussianSyllabifier()) { self.syllabifier = syllabifier }
-    public func parse(_ lyrics: String, signature: TimeSignature) throws -> [LyricsLine] {
-        let texts = lyrics.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-        guard lyrics.count <= 100_000, texts.count <= 500 else { throw LyricsError.tooMuchText }
-        return try texts.map { text in
-            var line = LyricsLine(text: text, length: signature.barTicks * 2)
-            try rebuild(&line)
+    /// Remove balanced annotations, retaining line breaks and word separation.
+    /// Unclosed delimiters remain literal text so an unfinished edit cannot hide a verse.
+    public func canvasText(_ text: String) -> String {
+        let characters = Array(text)
+        var openings: [(Character, Int)] = []
+        var changes = [Int](repeating: 0, count: characters.count + 1)
+        for (index, character) in characters.enumerated() {
+            if character == "[" || character == "(" { openings.append((character, index)) }
+            else if let last = openings.last,
+                    (character == "]" && last.0 == "[") || (character == ")" && last.0 == "(") {
+                openings.removeLast()
+                changes[last.1] += 1
+                changes[index + 1] -= 1
+            }
+        }
+        var depth = 0
+        var result = ""
+        var wasIgnored = false
+        for (index, character) in characters.enumerated() {
+            depth += changes[index]
+            if depth == 0 || character.isNewline {
+                result.append(character)
+                wasIgnored = false
+            } else if !wasIgnored {
+                result.append(" ")
+                wasIgnored = true
+            }
+        }
+        return result
+    }
+    private func normalized(_ text: String) -> String {
+        text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+    }
+    public func sourceLines(_ lyrics: String) -> [LyricsSourceLine] {
+        let source = normalized(lyrics)
+        let originals = source.components(separatedBy: "\n")
+        let visible = canvasText(source).components(separatedBy: "\n")
+        return originals.indices.map {
+            LyricsSourceLine(originalText: originals[$0].trimmingCharacters(in: .whitespaces),
+                             canvasText: visible[$0].trimmingCharacters(in: .whitespaces), sourceLineIndex: $0)
+        }
+    }
+    public func canvasLines(_ lyrics: String) -> [LyricsSourceLine] {
+        sourceLines(lyrics).filter { !$0.canvasText.isEmpty }
+    }
+    public func replacingSourceLine(in lyrics: String, at index: Int, with text: String) -> String {
+        var lines = normalized(lyrics).components(separatedBy: "\n")
+        guard lines.indices.contains(index) else { return lyrics }
+        lines[index] = text
+        return lines.joined(separator: "\n")
+    }
+    public func parse(_ lyrics: String, signature: TimeSignature, preserving existing: [LyricsLine] = []) throws -> [LyricsLine] {
+        guard lyrics.count <= 100_000 else { throw LyricsError.tooMuchText }
+        let sources = canvasLines(lyrics)
+        guard sources.count <= 500 else { throw LyricsError.tooMuchText }
+        var remaining = existing
+        return try sources.map { source in
+            var line = LyricsLine(text: source.originalText, length: signature.barTicks * 2)
+            if let index = remaining.firstIndex(where: { $0.originalText == source.originalText }) {
+                line = remaining.remove(at: index)
+                if line.renderedWords == source.canvasText.split(whereSeparator: \.isWhitespace).map(String.init) { return line }
+            }
+            if let manual = line.manualOverrides,
+               (try? rebuild(&line, manual: canvasText(manual), textForCanvas: source.canvasText)) != nil {
+                return line
+            }
+            try rebuild(&line, textForCanvas: source.canvasText)
             return line
         }
     }
-    public func rebuild(_ line: inout LyricsLine, manual: String? = nil) throws {
-        let words = line.originalText.split(whereSeparator: \.isWhitespace).map(String.init)
+    public func rebuild(_ line: inout LyricsLine, manual: String? = nil, textForCanvas: String? = nil) throws {
+        let words = (textForCanvas ?? canvasText(line.originalText)).split(whereSeparator: \.isWhitespace).map(String.init)
         let pieces: [[String]]
         if let manual {
             let entries = manual.split(whereSeparator: \.isWhitespace).map(String.init)
