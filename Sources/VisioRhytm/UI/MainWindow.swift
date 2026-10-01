@@ -38,6 +38,11 @@ struct MainWindow: View {
                         }
                         .disabled(state.project.lines.isEmpty)
                         .help("Разместить все строки от первого до последнего выбранного такта и пересчитать плотность.")
+                        Button { state.resetLineFit() } label: {
+                            Label("Сбросить подгонку", systemImage: "arrow.uturn.backward")
+                        }
+                        .disabled(!state.canResetLineFit)
+                        .help("Вернуть начало, длину и расположение слогов до первой подгонки в текущей сессии; сохранить изменения текста.")
                         let settings = state.project.metronomeSettings
                         Text("Диапазон \(settings.loopStartBar)–\(settings.loopEndBar) · \(settings.loopEndBar - settings.loopStartBar + 1) такт.")
                             .font(.caption).foregroundStyle(.secondary).monospacedDigit()

@@ -14,6 +14,16 @@ final class AppState {
     private(set) var fileURL: URL?
     private(set) var isDirty = false
     private(set) var recoveryMessage: String?
+    private var fitSnapshot: FitSnapshot?
+    var canResetLineFit: Bool {
+        guard let snapshot = fitSnapshot, snapshot.projectID == project.id else { return false }
+        return project.lines.contains { snapshot.lines[$0.id] != nil }
+    }
+
+    private struct FitSnapshot {
+        let projectID: UUID
+        let lines: [UUID: LyricsLine]
+    }
     let metronome = MetronomeEngine()
     @ObservationIgnored private let store = ProjectStore()
     @ObservationIgnored private let lyricsEngine = LyricsEngine()
@@ -58,6 +68,7 @@ final class AppState {
         perform { try metronome.updatePlaybackRange(project: project) }
     }
     private func changed() {
+        if !canResetLineFit { fitSnapshot = nil }
         isDirty = true
         autosaveTask?.cancel()
         let snapshot = project
@@ -123,7 +134,37 @@ final class AppState {
                 lyricsEngine.layout(&fitted.lines[index])
             }
             try store.validate(fitted)
+            var originals = canResetLineFit ? fitSnapshot!.lines : [:]
+            for line in project.lines where originals[line.id] == nil {
+                originals[line.id] = line
+            }
+            fitSnapshot = FitSnapshot(projectID: project.id, lines: originals)
             edit { $0 = fitted }
+        }
+    }
+    func resetLineFit() {
+        guard canResetLineFit, let snapshot = fitSnapshot else { return }
+        perform {
+            var restored = project
+            for index in restored.lines.indices {
+                guard let original = snapshot.lines[restored.lines[index].id] else { continue }
+                restored.lines[index].startPosition = original.startPosition
+                restored.lines[index].rhythmicLength = original.rhythmicLength
+                if restored.lines[index].syllables.map(\.id) == original.syllables.map(\.id) {
+                    for syllableIndex in restored.lines[index].syllables.indices {
+                        restored.lines[index].syllables[syllableIndex].position = original.syllables[syllableIndex].position
+                        restored.lines[index].syllables[syllableIndex].duration = original.syllables[syllableIndex].duration
+                    }
+                } else {
+                    guard Int64(restored.lines[index].syllables.count) <= original.rhythmicLength.ticks else {
+                        throw ProjectError.invalid("в строке \(index + 1) слишком много слогов для прежней длины. Сократите текст перед сбросом подгонки")
+                    }
+                    lyricsEngine.layout(&restored.lines[index])
+                }
+            }
+            try store.validate(restored)
+            fitSnapshot = nil
+            edit { $0 = restored }
         }
     }
     func setDensity(_ id: UUID, density: Double) {
@@ -197,6 +238,7 @@ final class AppState {
     }
     private func replace(with newProject: Project, url: URL?) {
         metronome.stop()
+        fitSnapshot = nil
         project = newProject
         lyricsDraft = newProject.lyrics
         fileURL = url
