@@ -3,6 +3,7 @@ import AppKit
 import SwiftUI
 import Observation
 import Testing
+import VisioRhytmCore
 import VisioRhytmRhyme
 @testable import VisioRhytm
 
@@ -298,4 +299,26 @@ private struct EditorHarness: View {
     let scroll = try #require(mainEditor.enclosingScrollView)
     #expect(scroll.frame.height >= 120)
     #expect(mainHost.bounds.contains(mainHost.convert(scroll.bounds, from: scroll)))
+
+    appState.setLiveCanvasEnabled(true)
+    appState.setPlaybackStartBar(5); appState.setPlaybackEndBar(8)
+    appState.setAutoFitEnabled(true)
+    let oldIDs = appState.project.lines.map(\.id)
+    let liveText = "[Verse]\nНочь дарит нам свет.\n\nНовая строка\nДругая строка"
+    window.makeFirstResponder(mainEditor)
+    mainEditor.insertText(liveText, replacementRange: NSRange(location: 0, length: (original as NSString).length))
+    mainEditor.setSelectedRange(NSRange(location: ("[Verse]\nНочь дарит нам свет." as NSString).length, length: 0))
+    try await waitUntil { appState.project.lyrics == liveText }
+    #expect(appState.project.lines.count == 3)
+    #expect(appState.project.lines[0].id == oldIDs[0])
+    #expect(appState.project.lines[2].id == oldIDs[1])
+    #expect(RhythmCanvasRowLayout(project: appState.project, separateSections: true).gaps == [0, 32, 0])
+    let range = RhythmEngine.playbackRange(project: appState.project)
+    #expect(appState.project.lines.allSatisfy { $0.startPosition.ticks == range.lowerBound && $0.endTicks == range.upperBound })
+    #expect(mainEditor.undoManager?.canUndo == true)
+    mainEditor.undoManager?.undo()
+    try await waitUntil { appState.project.lyrics == original }
+    #expect(appState.lyricsDraft == original)
+    #expect(appState.project.lines.map(\.id) == oldIDs)
+    #expect(appState.autoFitEnabled)
 }

@@ -1,19 +1,35 @@
 import SwiftUI
 import VisioRhytmCore
 
+struct RhythmCanvasRowLayout {
+    static let sectionGap: CGFloat = 32
+    let gaps: [CGFloat]
+    var tracksHeight: CGFloat {
+        CGFloat(max(1, gaps.count)) * RhythmCanvas.rowHeight + gaps.reduce(0, +)
+    }
+    init(project: Project, separateSections: Bool) {
+        let sources = LyricsEngine().canvasLines(project.lyrics)
+        gaps = project.lines.indices.map { index in
+            guard separateSections, sources.indices.contains(index), sources[index].blankLinesBefore > 0 else { return 0 }
+            return Self.sectionGap
+        }
+    }
+}
+
 struct RhythmCanvas: View {
     let state: AppState
-    static let rowHeight: CGFloat = 104
-    static let rulerHeight: CGFloat = 64
+    nonisolated static let rowHeight: CGFloat = 104
+    nonisolated static let rulerHeight: CGFloat = 64
     private let controlsWidth: CGFloat = 260
     var body: some View {
         let showClickStripes = state.showClickStripes
+        let rows = RhythmCanvasRowLayout(project: state.project, separateSections: state.showSectionSpacing)
         GeometryReader { geometry in
             let signature = state.project.timeSignature
             let ticks = RhythmEngine.timelineEndTicks(project: state.project)
             let scale = 96 * state.zoom / Double(RhythmEngine.ppq)
             let width = max(geometry.size.width - controlsWidth, Double(ticks) * scale + 30)
-            let height = max(geometry.size.height, Self.rulerHeight + CGFloat(max(1, state.project.lines.count)) * Self.rowHeight)
+            let height = max(geometry.size.height, Self.rulerHeight + rows.tracksHeight)
             ScrollView(.vertical) {
                 HStack(alignment: .top, spacing: 0) {
                     VStack(spacing: 0) {
@@ -23,6 +39,7 @@ struct RhythmCanvas: View {
                         }.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).frame(height: Self.rulerHeight)
                         ForEach(Array(state.project.lines.enumerated()), id: \.element.id) { number, line in
                             LineControls(state: state, line: line, number: number + 1)
+                                .padding(.top, rows.gaps[number])
                         }
                     }.frame(width: controlsWidth)
                     Divider()
@@ -50,6 +67,7 @@ struct RhythmCanvas: View {
                                 ForEach(Array(state.project.lines.enumerated()), id: \.element.id) { number, line in
                                     LyricsTrack(line: line, number: number + 1, signature: signature, scale: scale)
                                         .frame(width: width, height: Self.rowHeight)
+                                        .padding(.top, rows.gaps[number])
                                         .onTapGesture { state.selectedLineID = line.id }
                                         .help(line.renderedText + "\nНажмите для редактирования текста и слогов.")
                                 }

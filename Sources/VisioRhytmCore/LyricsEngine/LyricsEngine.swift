@@ -41,6 +41,7 @@ public struct LyricsSourceLine: Sendable {
     public let originalText: String
     public let canvasText: String
     public let sourceLineIndex: Int
+    public let blankLinesBefore: Int
 }
 
 public struct LyricsEngine: Sendable {
@@ -83,9 +84,15 @@ public struct LyricsEngine: Sendable {
         let source = normalized(lyrics)
         let originals = source.components(separatedBy: "\n")
         let visible = canvasText(source).components(separatedBy: "\n")
+        var blankCount = 0
+        var hasVisibleLine = false
         return originals.indices.map {
-            LyricsSourceLine(originalText: originals[$0].trimmingCharacters(in: .whitespaces),
-                             canvasText: visible[$0].trimmingCharacters(in: .whitespaces), sourceLineIndex: $0)
+            let original = originals[$0].trimmingCharacters(in: .whitespaces)
+            let canvas = visible[$0].trimmingCharacters(in: .whitespaces)
+            let gap = !canvas.isEmpty && hasVisibleLine ? blankCount : 0
+            if !canvas.isEmpty { hasVisibleLine = true; blankCount = 0 }
+            else if original.isEmpty && hasVisibleLine { blankCount += 1 }
+            return LyricsSourceLine(originalText: original, canvasText: canvas, sourceLineIndex: $0, blankLinesBefore: gap)
         }
     }
     public func canvasLines(_ lyrics: String) -> [LyricsSourceLine] {
@@ -97,14 +104,19 @@ public struct LyricsEngine: Sendable {
         lines[index] = text
         return lines.joined(separator: "\n")
     }
-    public func parse(_ lyrics: String, signature: TimeSignature, preserving existing: [LyricsLine] = []) throws -> [LyricsLine] {
+    public func parse(_ lyrics: String, signature: TimeSignature, preserving existing: [LyricsLine] = [], preservingEdits: Bool = false) throws -> [LyricsLine] {
         guard lyrics.count <= 100_000 else { throw LyricsError.tooMuchText }
         let sources = canvasLines(lyrics)
         guard sources.count <= 500 else { throw LyricsError.tooMuchText }
         var remaining = existing
-        return try sources.map { source in
+        let editedMatches = preservingEdits ? matchEditedLines(sources, existing: existing) : [:]
+        return try sources.enumerated().map { offset, source in
             var line = LyricsLine(text: source.originalText, length: signature.barTicks * 2)
-            if let index = remaining.firstIndex(where: { $0.originalText == source.originalText }) {
+            if preservingEdits, let oldIndex = editedMatches[offset] {
+                line = existing[oldIndex]
+                line.originalText = source.originalText
+                if line.renderedWords == source.canvasText.split(whereSeparator: \.isWhitespace).map(String.init) { return line }
+            } else if !preservingEdits, let index = remaining.firstIndex(where: { $0.originalText == source.originalText }) {
                 line = remaining.remove(at: index)
                 if line.renderedWords == source.canvasText.split(whereSeparator: \.isWhitespace).map(String.init) { return line }
             }
@@ -115,6 +127,33 @@ public struct LyricsEngine: Sendable {
             try rebuild(&line, textForCanvas: source.canvasText)
             return line
         }
+    }
+    /// Unchanged lines anchor each edit region. Replacements retain their musical length;
+    /// inserted lines receive defaults, and moved exact matches retain their identity.
+    private func matchEditedLines(_ sources: [LyricsSourceLine], existing: [LyricsLine]) -> [Int: Int] {
+        let difference = sources.map(\.originalText).difference(from: existing.map(\.originalText)).inferringMoves()
+        var removed = Set<Int>(), inserted = Set<Int>(), result: [Int: Int] = [:]
+        for change in difference {
+            switch change {
+            case .remove(let offset, _, _): removed.insert(offset)
+            case .insert(let offset, _, let old):
+                inserted.insert(offset)
+                if let old { result[offset] = old }
+            }
+        }
+        let oldUnchanged = existing.indices.filter { !removed.contains($0) }
+        let newUnchanged = sources.indices.filter { !inserted.contains($0) }
+        let anchors = Array(zip(newUnchanged, oldUnchanged)) + [(sources.count, existing.count)]
+        var newStart = 0, oldStart = 0
+        let moved = Set(result.values)
+        for (newEnd, oldEnd) in anchors {
+            let oldEdits = (oldStart..<oldEnd).filter { !moved.contains($0) }
+            let newEdits = (newStart..<newEnd).filter { result[$0] == nil }
+            for (new, old) in zip(newEdits, oldEdits) { result[new] = old }
+            if newEnd < sources.count { result[newEnd] = oldEnd }
+            newStart = newEnd + 1; oldStart = oldEnd + 1
+        }
+        return result
     }
     public func rebuild(_ line: inout LyricsLine, manual: String? = nil, textForCanvas: String? = nil) throws {
         let words = (textForCanvas ?? canvasText(line.originalText)).split(whereSeparator: \.isWhitespace).map(String.init)

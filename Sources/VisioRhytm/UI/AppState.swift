@@ -7,7 +7,13 @@ import VisioRhytmAudio
 @MainActor @Observable
 final class AppState {
     var project: Project
-    var lyricsDraft: String
+    var lyricsDraft: String {
+        didSet { if lyricsDraft != oldValue { scheduleCanvasUpdate() } }
+    }
+    private(set) var liveCanvasEnabled = false
+    private(set) var autoFitEnabled = false
+    var showSectionSpacing = true
+    private(set) var canvasUpdateError: String?
     var zoom: Double = 1
     var showClickStripes = true
     var errorMessage: String?
@@ -32,6 +38,7 @@ final class AppState {
     @ObservationIgnored private let store = ProjectStore()
     @ObservationIgnored private let lyricsEngine = LyricsEngine()
     @ObservationIgnored private var autosaveTask: Task<Void, Never>?
+    @ObservationIgnored private var canvasUpdateTask: Task<Void, Never>?
     @ObservationIgnored private let autosaveURL: URL
     @ObservationIgnored private let confirmDiscard: (() -> Bool)?
 
@@ -40,7 +47,7 @@ final class AppState {
         self.confirmDiscard = confirmDiscard
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         autosaveURL = customAutosaveURL ?? support.appendingPathComponent("VisioRhytm/Autosave.visiorhythm")
-        var initial = Project()
+        var initial = Self.makeNewProject()
         if FileManager.default.fileExists(atPath: autosaveURL.path) {
             do {
                 initial = try store.load(from: autosaveURL)
@@ -55,24 +62,79 @@ final class AppState {
         metronome.onFailure = { [weak self] in self?.errorMessage = $0 }
     }
 
+    static let exampleLyrics = "Война на невидимом фронте\nГде враг растворяется в сети\nМы строим защиту сегодня\nЧтоб завтра систему спасти"
+    private static func makeNewProject() -> Project {
+        var project = Project()
+        project.lyrics = exampleLyrics
+        // Fixed bundled text is within the parser's limits.
+        project.lines = (try? LyricsEngine().parse(project.lyrics, signature: project.timeSignature)) ?? []
+        return project
+    }
+    func setLiveCanvasEnabled(_ enabled: Bool) {
+        canvasUpdateTask?.cancel()
+        liveCanvasEnabled = enabled
+        canvasUpdateError = nil
+        if enabled, lyricsDraft != project.lyrics { _ = applyLyrics(reportErrors: false) }
+    }
+    private func scheduleCanvasUpdate() {
+        canvasUpdateTask?.cancel()
+        canvasUpdateError = nil
+        guard liveCanvasEnabled, lyricsDraft != project.lyrics else { return }
+        let draft = lyricsDraft, projectID = project.id
+        canvasUpdateTask = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
+            guard let self, self.liveCanvasEnabled, self.project.id == projectID, self.lyricsDraft == draft else { return }
+            _ = self.applyLyrics(reportErrors: false)
+        }
+    }
+    func setAutoFitEnabled(_ enabled: Bool) {
+        if !enabled {
+            autoFitEnabled = false
+            if liveCanvasEnabled, lyricsDraft != project.lyrics { _ = applyLyrics(reportErrors: false) }
+            return
+        }
+        do {
+            let fitted = try fitting(project)
+            rememberLineFit(project.lines)
+            autoFitEnabled = true
+            edit { $0 = fitted }
+            if liveCanvasEnabled, lyricsDraft != project.lyrics { _ = applyLyrics(reportErrors: false) }
+        } catch { errorMessage = error.localizedDescription }
+    }
+
     func edit(_ change: (inout Project) -> Void, audio: Bool = false) {
         change(&project)
         changed()
         if audio { perform { try metronome.reconfigure(project: project) } }
     }
     func setTimeSignature(_ signature: TimeSignature) {
-        edit({ $0.timeSignature = signature }, audio: true)
+        if rhythmChange({ $0.timeSignature = signature }) { perform { try metronome.reconfigure(project: project) } }
     }
     func setPlaybackStartBar(_ bar: Int) {
-        edit {
+        guard rhythmChange({
             $0.metronomeSettings.loopStartBar = min(256, max(1, bar))
             $0.metronomeSettings.loopEndBar = max($0.metronomeSettings.loopStartBar, $0.metronomeSettings.loopEndBar)
-        }
+        }) else { return }
         perform { try metronome.updatePlaybackRange(project: project) }
     }
     func setPlaybackEndBar(_ bar: Int) {
-        edit { $0.metronomeSettings.loopEndBar = min(256, max($0.metronomeSettings.loopStartBar, bar)) }
+        guard rhythmChange({ $0.metronomeSettings.loopEndBar = min(256, max($0.metronomeSettings.loopStartBar, bar)) }) else { return }
         perform { try metronome.updatePlaybackRange(project: project) }
+    }
+    private func rhythmChange(_ change: (inout Project) -> Void) -> Bool {
+        do {
+            var candidate = project
+            change(&candidate)
+            try commit(candidate)
+            if liveCanvasEnabled, lyricsDraft != project.lyrics { _ = applyLyrics(reportErrors: false) }
+            return true
+        } catch { errorMessage = error.localizedDescription; return false }
+    }
+    private func commit(_ candidate: Project) throws {
+        let prepared = autoFitEnabled ? try fitting(candidate) : candidate
+        if autoFitEnabled { rememberLineFit(candidate.lines) }
+        project = prepared
+        changed()
     }
     private func changed() {
         if !canResetLineFit { fitSnapshot = nil }
@@ -88,22 +150,27 @@ final class AppState {
             }
         }
     }
-    @discardableResult func applyLyrics() -> Bool {
+    @discardableResult func applyLyrics(reportErrors: Bool = true) -> Bool {
+        canvasUpdateTask?.cancel()
         do {
-            let lines = try lyricsEngine.parse(lyricsDraft, signature: project.timeSignature, preserving: project.lines)
-            edit { $0.lyrics = lyricsDraft; $0.lines = lines }
+            let lines = try lyricsEngine.parse(lyricsDraft, signature: project.timeSignature, preserving: project.lines, preservingEdits: liveCanvasEnabled)
+            var candidate = project
+            candidate.lyrics = lyricsDraft; candidate.lines = lines
+            try commit(candidate)
+            canvasUpdateError = nil
+            if let selectedLineID, !lines.contains(where: { $0.id == selectedLineID }) { self.selectedLineID = nil }
             return true
-        } catch { errorMessage = error.localizedDescription; return false }
-    }
-    func demo() {
-        rhymeAssistant.resetContext()
-        lyricsDraft = "Война на невидимом фронте\nГде враг растворяется в сети\nМы строим защиту сегодня\nЧтоб завтра систему спасти"
-        _ = applyLyrics()
+        } catch {
+            if reportErrors { errorMessage = error.localizedDescription }
+            else { canvasUpdateError = error.localizedDescription }
+            return false
+        }
     }
     func updateLine(_ id: UUID, change: (inout LyricsLine) throws -> Void) {
         guard let index = project.lines.firstIndex(where: { $0.id == id }) else { return }
         do {
             let hasDraft = lyricsDraft != project.lyrics
+            var candidate = project
             var line = project.lines[index]
             try change(&line)
             lyricsEngine.layout(&line)
@@ -113,13 +180,13 @@ final class AppState {
                 var candidates = project.lines
                 candidates[index] = line
                 let rebuilt = try lyricsEngine.parse(lyrics, signature: project.timeSignature, preserving: candidates)
-                project.lyrics = lyrics
-                project.lines = rebuilt
+                candidate.lyrics = lyrics
+                candidate.lines = rebuilt
             } else {
-                project.lines[index] = line
+                candidate.lines[index] = line
             }
+            try commit(candidate)
             if !hasDraft { lyricsDraft = project.lyrics }
-            changed()
         } catch { errorMessage = error.localizedDescription }
     }
     func setBars(_ id: UUID, bars: Int) {
@@ -129,25 +196,32 @@ final class AppState {
     func fitLinesToPlaybackRange() {
         guard !project.lines.isEmpty else { return }
         perform {
-            let range = RhythmEngine.playbackRange(project: project)
-            let length = range.upperBound - range.lowerBound
-            var fitted = project
-            for index in fitted.lines.indices {
-                guard Int64(fitted.lines[index].syllables.count) <= length else {
-                    throw ProjectError.invalid("в строке \(index + 1) слишком много слогов для выбранного диапазона. Увеличьте число тактов")
-                }
-                fitted.lines[index].startPosition.ticks = range.lowerBound
-                fitted.lines[index].rhythmicLength.ticks = length
-                lyricsEngine.layout(&fitted.lines[index])
-            }
-            try store.validate(fitted)
-            var originals = canResetLineFit ? fitSnapshot!.lines : [:]
-            for line in project.lines where originals[line.id] == nil {
-                originals[line.id] = line
-            }
-            fitSnapshot = FitSnapshot(projectID: project.id, lines: originals)
+            let fitted = try fitting(project)
+            rememberLineFit(project.lines)
             edit { $0 = fitted }
         }
+    }
+    private func fitting(_ candidate: Project) throws -> Project {
+        let range = RhythmEngine.playbackRange(project: candidate)
+        let length = range.upperBound - range.lowerBound
+        var fitted = candidate
+        for index in fitted.lines.indices {
+            guard Int64(fitted.lines[index].syllables.count) <= length else {
+                throw ProjectError.invalid("в строке \(index + 1) слишком много слогов для выбранного диапазона. Увеличьте число тактов")
+            }
+            fitted.lines[index].startPosition.ticks = range.lowerBound
+            fitted.lines[index].rhythmicLength.ticks = length
+            lyricsEngine.layout(&fitted.lines[index])
+        }
+        try store.validate(fitted)
+        return fitted
+    }
+    private func rememberLineFit(_ lines: [LyricsLine]) {
+        var originals = canResetLineFit ? fitSnapshot!.lines : [:]
+        for line in lines where originals[line.id] == nil {
+            originals[line.id] = line
+        }
+        fitSnapshot = FitSnapshot(projectID: project.id, lines: originals)
     }
     func resetLineFit() {
         guard canResetLineFit, let snapshot = fitSnapshot else { return }
@@ -170,6 +244,7 @@ final class AppState {
                 }
             }
             try store.validate(restored)
+            autoFitEnabled = false
             fitSnapshot = nil
             edit { $0 = restored }
         }
@@ -230,7 +305,7 @@ final class AppState {
     }
     func newProject() {
         guard mayDiscard() else { return }
-        replace(with: Project(), url: nil)
+        replace(with: Self.makeNewProject(), url: nil)
     }
     func openProject() {
         let panel = NSOpenPanel()
@@ -253,6 +328,9 @@ final class AppState {
         }
     }
     private func replace(with newProject: Project, url: URL?) {
+        canvasUpdateTask?.cancel()
+        canvasUpdateError = nil
+        autoFitEnabled = false
         metronome.stop()
         rhymeAssistant.resetContext()
         fitSnapshot = nil
@@ -286,6 +364,7 @@ final class AppState {
     func prepareToQuit() -> Bool {
         guard mayDiscard() else { return false }
         metronome.stop()
+        canvasUpdateTask?.cancel()
         autosaveTask?.cancel()
         perform { try store.save(project, to: autosaveURL) }
         return true

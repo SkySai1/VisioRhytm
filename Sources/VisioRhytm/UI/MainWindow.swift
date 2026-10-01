@@ -37,11 +37,9 @@ struct MainWindow: View {
                         Text(state.zoom, format: .percent.precision(.fractionLength(0))).monospacedDigit().frame(width: 46)
                     }.padding(16)
                     HStack(spacing: 12) {
-                        Button { state.fitLinesToPlaybackRange() } label: {
-                            Label("Подогнать строки под такты", systemImage: "arrow.left.and.right")
-                        }
-                        .disabled(state.project.lines.isEmpty)
-                        .help("Разместить все строки от первого до последнего выбранного такта и пересчитать плотность.")
+                        Toggle("Подгонять под такты", isOn: Binding(get: { state.autoFitEnabled }, set: { state.setAutoFitEnabled($0) }))
+                            .toggleStyle(.checkbox)
+                            .help("Автоматически размещать строки в выбранном диапазоне при изменении текста, тактов и размера. Выключение сохраняет текущую раскладку.")
                         Button { state.resetLineFit() } label: {
                             Label("Сбросить подгонку", systemImage: "arrow.uturn.backward")
                         }
@@ -52,6 +50,10 @@ struct MainWindow: View {
                             .font(.caption).foregroundStyle(.secondary).monospacedDigit()
                         Spacer(minLength: 0)
                     }.padding(.horizontal, 16).padding(.bottom, 12)
+                    Toggle("Промежутки между секциями", isOn: $state.showSectionSpacing)
+                        .toggleStyle(.checkbox).font(.caption)
+                        .help("Увеличить расстояние между дорожками, разделёнными пустыми строками исходного текста.")
+                        .padding(.horizontal, 16).padding(.bottom, 12)
                     Divider()
                     RhythmCanvas(state: state)
                     Divider()
@@ -158,6 +160,9 @@ struct LyricsEditor: View {
             Text("Текст песни").font(.title3.bold())
             Text("Одна строка — одна дорожка. Пустые строки и текст в [] и () пропускаются.")
                 .font(.caption).foregroundStyle(.secondary)
+            Toggle("Обновлять полотно при вводе", isOn: Binding(get: { state.liveCanvasEnabled }, set: { state.setLiveCanvasEnabled($0) }))
+                .toggleStyle(.checkbox).font(.caption)
+                .help("Обновлять строки и слоги после короткой паузы в наборе, включая вставку рифмы и Undo.")
             HStack {
                 Toggle("Помощь с рифмой", isOn: Binding(get: { state.rhymeAssistant.settings.enabled }, set: { state.rhymeAssistant.setEnabled($0) }))
                     .toggleStyle(.checkbox).font(.caption)
@@ -189,7 +194,9 @@ struct LyricsEditor: View {
                 RhymeContextPanel(assistant: state.rhymeAssistant)
             }
             Button("Разместить строки") { state.applyLyrics() }.buttonStyle(.borderedProminent).frame(maxWidth: .infinity)
-            Button("Загрузить пример") { state.demo() }.buttonStyle(.borderless)
+            if let error = state.canvasUpdateError {
+                Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
+            }
             Divider()
             Text("\(state.project.lines.count) строк · \(state.project.lines.reduce(0) { $0 + $1.syllables.count }) слогов")
                 .font(.caption).foregroundStyle(.secondary)
@@ -222,10 +229,12 @@ struct LineControls: View {
                 }
                 Spacer(minLength: 0)
                 Text(String(format: "%.2f такт.", bars)).font(.caption2).foregroundStyle(.secondary)
-            }.controlSize(.mini)
+            }.controlSize(.mini).disabled(state.autoFitEnabled)
+                .help(state.autoFitEnabled ? "Выключите «Подгонять под такты» для индивидуальной длины строки." : "Музыкальная длина строки")
             HStack(spacing: 6) {
                 Slider(value: Binding(get: { min(6, max(0.25, density)) }, set: { state.setDensity(line.id, density: $0) }), in: 0.25...6)
                     .accessibilityLabel("Плотность строки \(number)")
+                    .disabled(state.autoFitEnabled)
                 Text(String(format: "%.2f сл/д", density)).font(.caption2).monospacedDigit().frame(width: 65)
             }
             HStack(spacing: 6) {
