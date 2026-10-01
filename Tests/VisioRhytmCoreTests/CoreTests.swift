@@ -158,12 +158,13 @@ private func example() throws -> Project {
 @Test func tenMinuteSampleClockHasNoAccumulatedDrift() {
     for rate in [44_100.0, 48_000.0, 96_000.0] {
         for bpm in [40.0, 137.0, 240.0] {
-            var project = Project(); project.bpm = bpm; project.metronomeSettings.loopEnabled = false
+            var project = Project(); project.bpm = bpm; project.metronomeSettings.loopEndBar = 256
             let plan = PlaybackPlan(project: project, startTicks: 0, sampleRate: rate)
             for seconds in stride(from: 0.0, through: 600.0, by: 0.371) {
                 let frame = (seconds * rate).rounded()
                 let actual = plan.position(frame: frame)
                 let expected = RhythmEngine.ticks(seconds: frame / rate, bpm: bpm)
+                    .truncatingRemainder(dividingBy: Double(project.timeSignature.barTicks * 256))
                 #expect(abs(actual - expected) < 1e-7)
             }
         }
@@ -203,4 +204,40 @@ private func example() throws -> Project {
 
 @Test func parserBoundsResources() {
     #expect(throws: LyricsError.self) { try LyricsEngine().parse(String(repeating: "строка\n", count: 501), signature: .init(4, 4)) }
+}
+
+@Test func singlePassUsesSelectedBarsAndStopsAtTheirBoundary() {
+    for signature in TimeSignature.supported {
+        var project = Project()
+        project.timeSignature = signature
+        project.metronomeSettings.loopEnabled = false
+        project.metronomeSettings.loopStartBar = 5
+        project.metronomeSettings.loopEndBar = 8
+        let plan = PlaybackPlan(project: project, startTicks: 0, sampleRate: 48_000)
+        let end = signature.barTicks * 8
+        #expect(plan.startTicks == signature.barTicks * 4)
+        #expect(plan.endTicks == end)
+        let finalFrame = Double(end - plan.startTicks) / plan.ticksPerFrame
+        #expect(!plan.isFinished(frame: finalFrame - 1))
+        #expect(plan.isFinished(frame: finalFrame))
+        #expect(plan.position(frame: finalFrame + 48_000) == Double(end))
+        #expect((0..<1_100).allSatisfy { plan.sample(frame: Int64(ceil(finalFrame)) + Int64($0)) == 0 })
+        project.metronomeSettings.loopEnabled = true
+        let loop = PlaybackPlan(project: project, startTicks: 0, sampleRate: 48_000)
+        #expect(!loop.isFinished(frame: finalFrame * 10))
+        #expect(loop.position(frame: finalFrame) == Double(loop.startTicks))
+    }
+}
+
+@Test func selectedRangeUpdatesCanvasWithoutTruncatingLyrics() {
+    var project = Project()
+    project.metronomeSettings.loopEnabled = false
+    project.metronomeSettings.loopEndBar = 1
+    #expect(RhythmEngine.timelineEndTicks(project: project) == 1920)
+    project.metronomeSettings.loopEndBar = 2
+    #expect(RhythmEngine.timelineEndTicks(project: project) == 3840)
+    project.lines = [LyricsLine(text: "Текст", length: 1920 * 4)]
+    #expect(RhythmEngine.timelineEndTicks(project: project) == 7680)
+    let plan = PlaybackPlan(project: project, startTicks: 0, sampleRate: 48_000)
+    #expect(plan.endTicks == 3840)
 }

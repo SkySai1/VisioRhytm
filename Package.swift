@@ -14,6 +14,7 @@ let package = Package(
         .target(name: "VisioRhytmAudio", dependencies: ["VisioRhytmCore"]),
         .executableTarget(name: "VisioRhytm", dependencies: ["VisioRhytmCore", "VisioRhytmAudio"]),
         .testTarget(name: "VisioRhytmCoreTests", dependencies: ["VisioRhytmCore"]),
-        .testTarget(name: "VisioRhytmAudioTests", dependencies: ["VisioRhytmCore", "VisioRhytmAudio"])
+        .testTarget(name: "VisioRhytmAudioTests", dependencies: ["VisioRhytmCore", "VisioRhytmAudio"]),
+        .testTarget(name: "VisioRhytmUITests", dependencies: ["VisioRhytm"])
     ]
 )

@@ -62,6 +62,7 @@ public final class MetronomeEngine {
     @ObservationIgnored private var outputLatency: Double = 0
     @ObservationIgnored private var configurationObserver: NSObjectProtocol?
     @ObservationIgnored private var playbackActivity: NSObjectProtocol?
+    @ObservationIgnored private var completionTask: Task<Void, Never>?
     public var onFailure: ((String) -> Void)?
     public init() {}
 
@@ -79,6 +80,9 @@ public final class MetronomeEngine {
         }
         var renderingProject = project
         renderingProject.metronomeSettings.volume = 1
+        if !project.metronomeSettings.loopEnabled && stoppedTicks >= RhythmEngine.playbackRange(project: project).upperBound {
+            stoppedTicks = RhythmEngine.playbackRange(project: project).lowerBound
+        }
         let state = RenderState(plan: PlaybackPlan(project: renderingProject, startTicks: stoppedTicks, sampleRate: rate))
         let node = state.makeSourceNode(format: format)
         engine.attach(node)
@@ -99,9 +103,25 @@ public final class MetronomeEngine {
                 self.onFailure?("Аудиоустройство изменилось. Выберите устройство вывода в macOS и снова нажмите Play.")
             }
         }
+        if state.plan.endTicks != nil {
+            completionTask = Task { @MainActor [weak self] in
+                while !Task.isCancelled {
+                    do { try await Task.sleep(for: .milliseconds(10)) }
+                    catch { return }
+                    guard let self, self.renderState === state, self.isPlaying else { return }
+                    // Only poll the audio clock. Musical time is never advanced by this task.
+                    if state.plan.isFinished(frame: state.currentFrame(latency: self.outputLatency)) {
+                        self.stop()
+                        return
+                    }
+                }
+            }
+        }
     }
     public func stop() {
         stoppedTicks = Int64(currentTicks())
+        completionTask?.cancel()
+        completionTask = nil
         if let observer = configurationObserver { NotificationCenter.default.removeObserver(observer) }
         configurationObserver = nil
         if let playbackActivity { ProcessInfo.processInfo.endActivity(playbackActivity) }
@@ -115,14 +135,28 @@ public final class MetronomeEngine {
     public func returnToStart(project: Project) throws {
         let wasPlaying = isPlaying
         stop()
-        stoppedTicks = project.metronomeSettings.loopEnabled
-            ? Int64(project.metronomeSettings.loopStartBar - 1) * project.timeSignature.barTicks : 0
+        stoppedTicks = RhythmEngine.playbackRange(project: project).lowerBound
         if wasPlaying { try start(project: project) }
     }
     public func reconfigure(project: Project) throws {
         guard isPlaying else { return }
         stop()
+        if !project.metronomeSettings.loopEnabled && stoppedTicks >= RhythmEngine.playbackRange(project: project).upperBound {
+            stoppedTicks = RhythmEngine.playbackRange(project: project).upperBound
+            return
+        }
         try start(project: project)
+    }
+    /// Reconcile a stopped cursor as well as running playback with edited bounds.
+    public func updatePlaybackRange(project: Project) throws {
+        if isPlaying {
+            try reconfigure(project: project)
+        } else {
+            let range = RhythmEngine.playbackRange(project: project)
+            if stoppedTicks < range.lowerBound || stoppedTicks >= range.upperBound {
+                stoppedTicks = range.lowerBound
+            }
+        }
     }
     public func setVolume(_ volume: Double) {
         engine?.mainMixerNode.outputVolume = Float(min(1, max(0, volume)))

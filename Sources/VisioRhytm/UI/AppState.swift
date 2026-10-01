@@ -20,9 +20,9 @@ final class AppState {
     @ObservationIgnored private var autosaveTask: Task<Void, Never>?
     @ObservationIgnored private let autosaveURL: URL
 
-    init() {
+    init(autosaveURL customAutosaveURL: URL? = nil) {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        autosaveURL = support.appendingPathComponent("VisioRhytm/Autosave.visiorhythm")
+        autosaveURL = customAutosaveURL ?? support.appendingPathComponent("VisioRhytm/Autosave.visiorhythm")
         var initial = Project()
         if FileManager.default.fileExists(atPath: autosaveURL.path) {
             do {
@@ -42,6 +42,20 @@ final class AppState {
         change(&project)
         changed()
         if audio { perform { try metronome.reconfigure(project: project) } }
+    }
+    func setTimeSignature(_ signature: TimeSignature) {
+        edit({ $0.timeSignature = signature }, audio: true)
+    }
+    func setPlaybackStartBar(_ bar: Int) {
+        edit {
+            $0.metronomeSettings.loopStartBar = min(256, max(1, bar))
+            $0.metronomeSettings.loopEndBar = max($0.metronomeSettings.loopStartBar, $0.metronomeSettings.loopEndBar)
+        }
+        perform { try metronome.updatePlaybackRange(project: project) }
+    }
+    func setPlaybackEndBar(_ bar: Int) {
+        edit { $0.metronomeSettings.loopEndBar = min(256, max($0.metronomeSettings.loopStartBar, bar)) }
+        perform { try metronome.updatePlaybackRange(project: project) }
     }
     private func changed() {
         isDirty = true

@@ -9,10 +9,7 @@ struct RhythmCanvas: View {
     var body: some View {
         GeometryReader { geometry in
             let signature = state.project.timeSignature
-            let end = max(state.project.lines.map(\.endTicks).max() ?? 0,
-                          Int64(state.project.metronomeSettings.loopEnabled ? state.project.metronomeSettings.loopEndBar : 4) * signature.barTicks)
-            let bars = max(4, Int(ceil(Double(end) / Double(signature.barTicks))))
-            let ticks = Int64(bars) * signature.barTicks
+            let ticks = RhythmEngine.timelineEndTicks(project: state.project)
             let scale = 96 * state.zoom / Double(RhythmEngine.ppq)
             let width = max(geometry.size.width - controlsWidth, Double(ticks) * scale + 30)
             let height = Self.rulerHeight + Double(max(1, state.project.lines.count)) * Self.rowHeight
@@ -32,6 +29,16 @@ struct RhythmCanvas: View {
                         ZStack(alignment: .topLeading) {
                             Canvas { context, size in
                                 drawGrid(context: &context, size: size, signature: signature, subdivision: state.project.subdivision, ticks: ticks, scale: scale)
+                                let range = RhythmEngine.playbackRange(project: state.project)
+                                let selected = CGRect(x: Double(range.lowerBound) * scale, y: 0,
+                                                      width: Double(range.count) * scale, height: Self.rulerHeight)
+                                context.fill(Path(selected), with: .color(.teal.opacity(0.12)))
+                                for tick in [range.lowerBound, range.upperBound] {
+                                    var boundary = Path()
+                                    boundary.move(to: CGPoint(x: Double(tick) * scale, y: 0))
+                                    boundary.addLine(to: CGPoint(x: Double(tick) * scale, y: size.height))
+                                    context.stroke(boundary, with: .color(.teal.opacity(0.45)), lineWidth: 2)
+                                }
                             }
                             VStack(spacing: 0) {
                                 Color.clear.frame(height: Self.rulerHeight)
@@ -53,7 +60,10 @@ struct RhythmCanvas: View {
                                     let columnTicks = min(signature.beatTicks, state.project.subdivision.ticks)
                                     let column = floor(position / Double(columnTicks)) * Double(columnTicks)
                                     let rect = CGRect(x: column * scale, y: Self.rulerHeight, width: Double(columnTicks) * scale, height: size.height - Self.rulerHeight)
-                                    context.fill(Path(rect), with: .color(.teal.opacity(state.metronome.isPlaying ? 0.12 : 0.04)))
+                                    let range = RhythmEngine.playbackRange(project: state.project)
+                                    if position < Double(range.upperBound) {
+                                        context.fill(Path(rect), with: .color(.teal.opacity(state.metronome.isPlaying ? 0.12 : 0.04)))
+                                    }
                                     var line = Path()
                                     line.move(to: CGPoint(x: position * scale, y: 25))
                                     line.addLine(to: CGPoint(x: position * scale, y: size.height))

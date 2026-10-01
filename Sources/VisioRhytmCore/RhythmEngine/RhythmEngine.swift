@@ -16,6 +16,16 @@ public enum ClickAccent: Sendable {
 
 public enum RhythmEngine {
     public static let ppq: Int64 = 480
+    public static func playbackRange(project: Project) -> Range<Int64> {
+        let bar = project.timeSignature.barTicks
+        return Int64(project.metronomeSettings.loopStartBar - 1) * bar ..< Int64(project.metronomeSettings.loopEndBar) * bar
+    }
+    /// Canvas includes the selected playback range and all existing lyric positions.
+    public static func timelineEndTicks(project: Project) -> Int64 {
+        let bar = project.timeSignature.barTicks
+        let end = max(project.lines.map(\.endTicks).max() ?? 0, playbackRange(project: project).upperBound)
+        return ((end + bar - 1) / bar) * bar
+    }
     public static func seconds(ticks: Double, bpm: Double) -> Double {
         ticks / Double(ppq) * 60 / bpm
     }
@@ -73,32 +83,38 @@ public struct PlaybackPlan: Sendable {
     public let stepTicks: Int64
     public let startTicks: Int64
     public let loopRange: Range<Int64>?
+    public let endTicks: Int64?
     public let sampleRate: Double
     public let volume: Double
     public init(project: Project, startTicks: Int64, sampleRate: Double) {
         bpm = project.bpm
         signature = project.timeSignature
         stepTicks = RhythmEngine.clickStep(signature: signature, subdivision: project.subdivision, preview: project.metronomeSettings.previewSubdivision)
+        let range = RhythmEngine.playbackRange(project: project)
+        self.startTicks = startTicks >= range.lowerBound && startTicks < range.upperBound ? startTicks : range.lowerBound
         if project.metronomeSettings.loopEnabled {
-            let lower = Int64(project.metronomeSettings.loopStartBar - 1) * signature.barTicks
-            let upper = Int64(project.metronomeSettings.loopEndBar) * signature.barTicks
-            loopRange = lower..<upper
-            self.startTicks = startTicks >= lower && startTicks < upper ? startTicks : lower
+            loopRange = range
+            endTicks = nil
         } else {
             loopRange = nil
-            self.startTicks = max(0, startTicks)
+            endTicks = range.upperBound
         }
         self.sampleRate = sampleRate
         volume = project.metronomeSettings.volume
     }
     public var ticksPerFrame: Double { bpm * Double(RhythmEngine.ppq) / (60 * sampleRate) }
+    public func isFinished(frame: Double) -> Bool {
+        guard let endTicks else { return false }
+        return Double(startTicks) + max(0, frame) * ticksPerFrame >= Double(endTicks)
+    }
     public func position(frame: Double) -> Double {
         let absolute = Double(startTicks) + max(0, frame) * ticksPerFrame
-        guard let range = loopRange else { return absolute }
+        guard let range = loopRange else { return min(absolute, Double(endTicks ?? startTicks)) }
         let length = Double(range.count)
         return Double(range.lowerBound) + (absolute - Double(range.lowerBound)).truncatingRemainder(dividingBy: length)
     }
     public func sample(frame: Int64) -> Float {
+        guard !isFinished(frame: Double(frame)) else { return 0 }
         let tick = position(frame: Double(frame))
         let clickTick = Int64(floor((tick + 1e-8) / Double(stepTicks))) * stepTicks
         // Resuming midway through a click must not invent a new onset.

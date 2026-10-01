@@ -7,6 +7,8 @@ import VisioRhytmCore
 @Test func offlineEngineRendersActualSourceNode() throws {
     var project = Project()
     project.metronomeSettings.loopEnabled = false
+    project.metronomeSettings.loopEndBar = 1
+    project.bpm = 240
     let plan = PlaybackPlan(project: project, startTicks: 0, sampleRate: 48_000)
     let state = RenderState(plan: plan)
     let format = try #require(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
@@ -40,6 +42,7 @@ import VisioRhytmCore
     project.bpm = 137
     project.metronomeSettings.volume = 0
     project.metronomeSettings.loopEnabled = false
+    project.metronomeSettings.loopEndBar = 256
     let engine = MetronomeEngine()
     engine.onFailure = { Issue.record("Audio configuration changed during test: \($0)") }
     try engine.start(project: project)
@@ -72,4 +75,46 @@ import VisioRhytmCore
     project.bpm = 90
     try engine.reconfigure(project: project)
     #expect(engine.isPlaying)
+}
+
+@Test(.enabled(if: ProcessInfo.processInfo.environment["VISIORHYTM_TRANSPORT_TEST"] == "1"))
+@MainActor func singlePassStopsWithoutUIAndCanReplay() async throws {
+    var project = Project()
+    project.bpm = 240
+    project.metronomeSettings.volume = 0
+    project.metronomeSettings.loopEnabled = false
+    project.metronomeSettings.loopStartBar = 2
+    project.metronomeSettings.loopEndBar = 2
+    let engine = MetronomeEngine()
+    defer { engine.stop() }
+    try engine.start(project: project)
+    try await Task.sleep(for: .milliseconds(1300))
+    #expect(!engine.isPlaying)
+    #expect(engine.stoppedTicks == 3840)
+    try engine.start(project: project)
+    #expect(engine.isPlaying)
+    #expect(engine.currentTicks() >= 1920 && engine.currentTicks() < 3840)
+    engine.stop()
+    try engine.returnToStart(project: project)
+    #expect(engine.currentTicks() == 1920)
+
+    project.metronomeSettings.loopEnabled = true
+    try engine.start(project: project)
+    try await Task.sleep(for: .milliseconds(1200))
+    #expect(engine.isPlaying)
+    project.metronomeSettings.loopEnabled = false
+    project.metronomeSettings.loopEndBar = 3
+    try engine.updatePlaybackRange(project: project)
+    try await Task.sleep(for: .milliseconds(2300))
+    #expect(!engine.isPlaying)
+    #expect(engine.stoppedTicks == 5760)
+
+    project.metronomeSettings.loopStartBar = 1
+    project.metronomeSettings.loopEndBar = 8
+    try engine.start(project: project)
+    try await Task.sleep(for: .milliseconds(1100))
+    project.metronomeSettings.loopEndBar = 1
+    try engine.updatePlaybackRange(project: project)
+    #expect(!engine.isPlaying)
+    #expect(engine.stoppedTicks == 1920)
 }

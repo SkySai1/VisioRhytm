@@ -70,8 +70,13 @@ struct TransportBar: View {
                 Label(state.metronome.isPlaying ? "Stop" : "Play", systemImage: state.metronome.isPlaying ? "stop.fill" : "play.fill").frame(width: 70)
             }.buttonStyle(.borderedProminent).tint(.teal).help("Play / Stop, ⌘Space")
             TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !state.metronome.isPlaying)) { _ in
-                let address = RhythmEngine.address(ticks: Int64(state.metronome.currentTicks()), signature: state.project.timeSignature)
-                Text("Такт \(address.bar) · доля \(address.beat)").monospacedDigit().frame(width: 145, alignment: .leading)
+                let ticks = Int64(state.metronome.currentTicks())
+                let end = RhythmEngine.playbackRange(project: state.project).upperBound
+                let address = RhythmEngine.address(ticks: ticks, signature: state.project.timeSignature)
+                Text(!state.project.metronomeSettings.loopEnabled && ticks >= end
+                     ? "Конец · такт \(state.project.metronomeSettings.loopEndBar)"
+                     : "Такт \(address.bar) · доля \(address.beat)")
+                    .monospacedDigit().frame(width: 145, alignment: .leading)
             }
             Divider().frame(height: 24)
             Image(systemName: "speaker.wave.2")
@@ -96,7 +101,7 @@ struct RhythmSettingsPanel: View {
                     .frame(width: 48).textFieldStyle(.roundedBorder)
                 Stepper("BPM", value: Binding(get: { state.project.bpm }, set: { value in state.edit({ $0.bpm = value }, audio: true) }), in: 40...240).labelsHidden()
             }.help("40–240 четвертных в минуту. В 6/8 BPM также относится к четверти.")
-            Picker("Размер", selection: Binding(get: { state.project.timeSignature }, set: { value in state.edit({ $0.timeSignature = value }, audio: true) })) {
+            Picker("Размер", selection: Binding(get: { state.project.timeSignature }, set: { state.setTimeSignature($0) })) {
                 ForEach(TimeSignature.supported, id: \.self) { Text($0.description).tag($0) }
             }.frame(width: 130)
             Picker("Сетка", selection: Binding(get: { state.project.subdivision }, set: { value in state.edit({ $0.subdivision = value }, audio: true) })) {
@@ -106,13 +111,13 @@ struct RhythmSettingsPanel: View {
             Divider().frame(height: 22)
             Toggle("Цикл", isOn: Binding(get: { state.project.metronomeSettings.loopEnabled }, set: { value in state.edit({ $0.metronomeSettings.loopEnabled = value }, audio: true) }))
             Text("Такты").foregroundStyle(.secondary)
-            Stepper(value: Binding(get: { state.project.metronomeSettings.loopStartBar }, set: { value in state.edit({ $0.metronomeSettings.loopStartBar = value; $0.metronomeSettings.loopEndBar = max(value, $0.metronomeSettings.loopEndBar) }, audio: true) }), in: 1...256) {
+            Stepper(value: Binding(get: { state.project.metronomeSettings.loopStartBar }, set: { state.setPlaybackStartBar($0) }), in: 1...256) {
                 Text("\(state.project.metronomeSettings.loopStartBar)").monospacedDigit().frame(width: 24)
-            }.fixedSize()
+            }.fixedSize().accessibilityLabel("Первый такт воспроизведения")
             Text("–")
-            Stepper(value: Binding(get: { state.project.metronomeSettings.loopEndBar }, set: { value in state.edit({ $0.metronomeSettings.loopEndBar = value }, audio: true) }), in: state.project.metronomeSettings.loopStartBar...256) {
+            Stepper(value: Binding(get: { state.project.metronomeSettings.loopEndBar }, set: { state.setPlaybackEndBar($0) }), in: state.project.metronomeSettings.loopStartBar...256) {
                 Text("\(state.project.metronomeSettings.loopEndBar)").monospacedDigit().frame(width: 24)
-            }.fixedSize()
+            }.fixedSize().accessibilityLabel("Последний такт воспроизведения")
             Spacer(minLength: 0)
         }.font(.callout).padding(.horizontal, 16).padding(.vertical, 12)
     }
