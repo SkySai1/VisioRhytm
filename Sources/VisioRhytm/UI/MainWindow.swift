@@ -1,5 +1,6 @@
 import SwiftUI
 import VisioRhytmCore
+import VisioRhytmRhyme
 
 struct MainWindow: View {
     @Bindable var state: AppState
@@ -70,7 +71,7 @@ struct MainWindow: View {
                 }.frame(minWidth: 700)
             }
         }
-        .frame(minWidth: 1100, minHeight: 640)
+        .frame(minWidth: 1100, minHeight: 720)
         .alert("VisioRhytm", isPresented: Binding(get: { state.errorMessage != nil }, set: { if !$0 { state.errorMessage = nil } })) {
             Button("OK") { state.errorMessage = nil }
         } message: { Text(state.errorMessage ?? "") }
@@ -151,15 +152,42 @@ struct RhythmSettingsPanel: View {
 
 struct LyricsEditor: View {
     @Bindable var state: AppState
+    @Environment(\.openSettings) private var openSettings
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Текст песни").font(.title3.bold())
             Text("Одна строка — одна дорожка. Пустые строки и текст в [] и () пропускаются.")
                 .font(.caption).foregroundStyle(.secondary)
-            TextEditor(text: $state.lyricsDraft).font(.body).scrollContentBackground(.hidden)
-                .padding(8).background(.background).clipShape(RoundedRectangle(cornerRadius: 8))
+            HStack {
+                Toggle("Помощь с рифмой", isOn: Binding(get: { state.rhymeAssistant.settings.enabled }, set: { state.rhymeAssistant.setEnabled($0) }))
+                    .toggleStyle(.checkbox).font(.caption)
+                Spacer(minLength: 0)
+                Button { openSettings() } label: { Image(systemName: "gearshape") }.help("Настройки Ollama, ⌘,")
+            }
+            if state.rhymeAssistant.settings.enabled {
+                Picker("Контекст", selection: Binding(get: { state.rhymeAssistant.settings.mode }, set: { mode in
+                    var settings = state.rhymeAssistant.settings; settings.mode = mode
+                    state.perform { try state.rhymeAssistant.applySettings(settings) }
+                })) {
+                    Text("Соседние строки").tag(RhymeContextMode.nearbyLines)
+                    Text("Вся песня").tag(RhymeContextMode.fullSong)
+                }.font(.caption)
+                HStack {
+                    Text("Курсор — в конце строки").font(.caption2).foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                    Button { state.rhymeAssistant.refresh() } label: { Image(systemName: "arrow.clockwise") }
+                        .buttonStyle(.borderless).help("Подобрать новые окончания текущей строки")
+                        .disabled(state.rhymeAssistant.isCompressing)
+                }
+            }
+            LyricsTextEditor(text: $state.lyricsDraft, assistant: state.rhymeAssistant, presentation: state.rhymeAssistant.presentation)
+                .frame(minHeight: 120)
+                .background(.background).clipShape(RoundedRectangle(cornerRadius: 8))
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(.quaternary))
                 .accessibilityLabel("Исходный текст песни")
+            if state.rhymeAssistant.settings.enabled && state.rhymeAssistant.settings.mode == .fullSong {
+                RhymeContextPanel(assistant: state.rhymeAssistant)
+            }
             Button("Разместить строки") { state.applyLyrics() }.buttonStyle(.borderedProminent).frame(maxWidth: .infinity)
             Button("Загрузить пример") { state.demo() }.buttonStyle(.borderless)
             Divider()

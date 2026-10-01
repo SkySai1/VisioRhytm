@@ -25,7 +25,7 @@ struct VisioRhytmApp: App {
         Window("VisioRhytm", id: "main") {
             MainWindow(state: state)
                 .onAppear { delegate.state = state }
-                .onDisappear { state.metronome.stop() }
+                .onDisappear { state.metronome.stop(); state.rhymeAssistant.dismissSuggestions() }
                 .onOpenURL { state.openURL($0) }
         }
         .defaultSize(width: 1440, height: 880)
@@ -42,6 +42,9 @@ struct VisioRhytmApp: App {
                 Button(state.metronome.isPlaying ? "Stop" : "Play") { state.togglePlayback() }.keyboardShortcut(.space, modifiers: [.command])
                 Button("Вернуться к началу") { state.returnToStart() }.keyboardShortcut(.return, modifiers: [.command])
             }
+        }
+        Settings {
+            RhymeSettingsView(assistant: state.rhymeAssistant)
         }
     }
 }

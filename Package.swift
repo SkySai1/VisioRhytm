@@ -7,12 +7,15 @@ let package = Package(
     products: [
         .library(name: "VisioRhytmCore", targets: ["VisioRhytmCore"]),
         .library(name: "VisioRhytmAudio", targets: ["VisioRhytmAudio"]),
+        .library(name: "VisioRhytmRhyme", targets: ["VisioRhytmRhyme"]),
         .executable(name: "VisioRhytm", targets: ["VisioRhytm"])
     ],
     targets: [
         .target(name: "VisioRhytmCore"),
         .target(name: "VisioRhytmAudio", dependencies: ["VisioRhytmCore"]),
-        .executableTarget(name: "VisioRhytm", dependencies: ["VisioRhytmCore", "VisioRhytmAudio"]),
+        .target(name: "VisioRhytmRhyme", dependencies: ["VisioRhytmCore"]),
+        .executableTarget(name: "VisioRhytm", dependencies: ["VisioRhytmCore", "VisioRhytmAudio", "VisioRhytmRhyme"]),
+        .testTarget(name: "VisioRhytmRhymeTests", dependencies: ["VisioRhytmRhyme"]),
         .testTarget(name: "VisioRhytmCoreTests", dependencies: ["VisioRhytmCore"]),
         .testTarget(name: "VisioRhytmAudioTests", dependencies: ["VisioRhytmCore", "VisioRhytmAudio"]),
         .testTarget(name: "VisioRhytmUITests", dependencies: ["VisioRhytm"])

@@ -28,13 +28,15 @@ final class AppState {
         let lines: [UUID: LyricsLine]
     }
     let metronome = MetronomeEngine()
+    let rhymeAssistant: RhymeAssistant
     @ObservationIgnored private let store = ProjectStore()
     @ObservationIgnored private let lyricsEngine = LyricsEngine()
     @ObservationIgnored private var autosaveTask: Task<Void, Never>?
     @ObservationIgnored private let autosaveURL: URL
     @ObservationIgnored private let confirmDiscard: (() -> Bool)?
 
-    init(autosaveURL customAutosaveURL: URL? = nil, confirmDiscard: (() -> Bool)? = nil) {
+    init(autosaveURL customAutosaveURL: URL? = nil, confirmDiscard: (() -> Bool)? = nil, rhymeAssistant: RhymeAssistant? = nil) {
+        self.rhymeAssistant = rhymeAssistant ?? RhymeAssistant()
         self.confirmDiscard = confirmDiscard
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         autosaveURL = customAutosaveURL ?? support.appendingPathComponent("VisioRhytm/Autosave.visiorhythm")
@@ -94,6 +96,7 @@ final class AppState {
         } catch { errorMessage = error.localizedDescription; return false }
     }
     func demo() {
+        rhymeAssistant.resetContext()
         lyricsDraft = "Война на невидимом фронте\nГде враг растворяется в сети\nМы строим защиту сегодня\nЧтоб завтра систему спасти"
         _ = applyLyrics()
     }
@@ -251,6 +254,7 @@ final class AppState {
     }
     private func replace(with newProject: Project, url: URL?) {
         metronome.stop()
+        rhymeAssistant.resetContext()
         fitSnapshot = nil
         project = newProject
         cleanProject = newProject
