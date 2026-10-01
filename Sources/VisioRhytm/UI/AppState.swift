@@ -1,0 +1,197 @@
+import AppKit
+import Observation
+import UniformTypeIdentifiers
+import VisioRhytmCore
+import VisioRhytmAudio
+
+@MainActor @Observable
+final class AppState {
+    var project: Project
+    var lyricsDraft: String
+    var zoom: Double = 1
+    var errorMessage: String?
+    var selectedLineID: UUID?
+    private(set) var fileURL: URL?
+    private(set) var isDirty = false
+    private(set) var recoveryMessage: String?
+    let metronome = MetronomeEngine()
+    @ObservationIgnored private let store = ProjectStore()
+    @ObservationIgnored private let lyricsEngine = LyricsEngine()
+    @ObservationIgnored private var autosaveTask: Task<Void, Never>?
+    @ObservationIgnored private let autosaveURL: URL
+
+    init() {
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        autosaveURL = support.appendingPathComponent("VisioRhytm/Autosave.visiorhythm")
+        var initial = Project()
+        if FileManager.default.fileExists(atPath: autosaveURL.path) {
+            do {
+                initial = try store.load(from: autosaveURL)
+                recoveryMessage = "Восстановлена последняя рабочая сессия. Сохраните её в файл проекта."
+                isDirty = true
+            } catch {
+                recoveryMessage = "Не удалось прочитать autosave: \(error.localizedDescription). Исходный файл сохранён."
+            }
+        }
+        project = initial
+        lyricsDraft = initial.lyrics
+        metronome.onFailure = { [weak self] in self?.errorMessage = $0 }
+    }
+
+    func edit(_ change: (inout Project) -> Void, audio: Bool = false) {
+        change(&project)
+        changed()
+        if audio { perform { try metronome.reconfigure(project: project) } }
+    }
+    private func changed() {
+        isDirty = true
+        autosaveTask?.cancel()
+        let snapshot = project
+        let url = autosaveURL
+        autosaveTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .milliseconds(600))
+                try ProjectStore().save(snapshot, to: url)
+            } catch is CancellationError {} catch {
+                self?.errorMessage = "Ошибка autosave: \(error.localizedDescription)"
+            }
+        }
+    }
+    @discardableResult func applyLyrics() -> Bool {
+        do {
+            let parsed = try lyricsEngine.parse(lyricsDraft, signature: project.timeSignature)
+            // Reuse unchanged occurrences, including manual boundaries and lengths.
+            var remaining = project.lines
+            let lines = parsed.map { line in
+                if let index = remaining.firstIndex(where: { $0.originalText == line.originalText }) {
+                    return remaining.remove(at: index)
+                }
+                return line
+            }
+            edit { $0.lyrics = lyricsDraft; $0.lines = lines }
+            return true
+        } catch { errorMessage = error.localizedDescription; return false }
+    }
+    func demo() {
+        lyricsDraft = "Война на невидимом фронте\nГде враг растворяется в сети\nМы строим защиту сегодня\nЧтоб завтра систему спасти"
+        _ = applyLyrics()
+    }
+    func updateLine(_ id: UUID, change: (inout LyricsLine) throws -> Void) {
+        guard let index = project.lines.firstIndex(where: { $0.id == id }) else { return }
+        do {
+            let hasDraft = lyricsDraft != project.lyrics
+            var line = project.lines[index]
+            try change(&line)
+            lyricsEngine.layout(&line)
+            project.lines[index] = line
+            project.lyrics = project.lines.map(\.originalText).joined(separator: "\n")
+            if !hasDraft { lyricsDraft = project.lyrics }
+            changed()
+        } catch { errorMessage = error.localizedDescription }
+    }
+    func setBars(_ id: UUID, bars: Int) {
+        let length = Int64(bars) * project.timeSignature.barTicks
+        updateLine(id) { $0.rhythmicLength.ticks = length }
+    }
+    func setDensity(_ id: UUID, density: Double) {
+        let signature = project.timeSignature
+        updateLine(id) {
+            $0.rhythmicLength.ticks = min(signature.barTicks * 32,
+                RhythmEngine.length(syllableCount: $0.syllables.count, density: density, signature: signature))
+        }
+    }
+    func reset(_ id: UUID) {
+        updateLine(id) { try lyricsEngine.rebuild(&$0) }
+    }
+    func editLine(_ id: UUID, text: String, manual: String?) {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !text.contains(where: \.isNewline) else {
+            errorMessage = "Введите одну непустую строку."; return
+        }
+        updateLine(id) {
+            $0.originalText = text.trimmingCharacters(in: .whitespaces)
+            try lyricsEngine.rebuild(&$0, manual: manual)
+        }
+    }
+    func togglePlayback() {
+        perform {
+            if metronome.isPlaying { metronome.stop() }
+            else { try metronome.start(project: project) }
+        }
+    }
+    func returnToStart() { perform { try metronome.returnToStart(project: project) } }
+    func perform(_ action: () throws -> Void) {
+        do { try action() } catch { errorMessage = error.localizedDescription }
+    }
+    private func mayDiscard() -> Bool {
+        guard isDirty || lyricsDraft != project.lyrics else { return true }
+        let alert = NSAlert()
+        alert.messageText = "Сохранить текущий проект?"
+        alert.informativeText = "В проекте есть несохранённые изменения."
+        alert.addButton(withTitle: "Сохранить")
+        alert.addButton(withTitle: "Отмена")
+        alert.addButton(withTitle: "Не сохранять")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: return save()
+        case .alertThirdButtonReturn: return true
+        default: return false
+        }
+    }
+    func newProject() {
+        guard mayDiscard() else { return }
+        replace(with: Project(), url: nil)
+    }
+    func openProject() {
+        guard mayDiscard() else { return }
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.visioRhytmProject, .json]
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        perform { replace(with: try store.load(from: url), url: url) }
+    }
+    func openURL(_ url: URL) {
+        guard mayDiscard() else { return }
+        perform { replace(with: try store.load(from: url), url: url) }
+    }
+    private func replace(with newProject: Project, url: URL?) {
+        metronome.stop()
+        project = newProject
+        lyricsDraft = newProject.lyrics
+        fileURL = url
+        recoveryMessage = nil
+        selectedLineID = nil
+        changed()
+        isDirty = false
+        returnToStart()
+    }
+    @discardableResult func save(as saveAs: Bool = false) -> Bool {
+        if lyricsDraft != project.lyrics && !applyLyrics() { return false }
+        var destination = fileURL
+        if saveAs || destination == nil {
+            let panel = NSSavePanel()
+            panel.allowedContentTypes = [.visioRhytmProject]
+            panel.nameFieldStringValue = project.title + ".visiorhythm"
+            guard panel.runModal() == .OK, let url = panel.url else { return false }
+            destination = url
+        }
+        guard let destination else { return false }
+        do {
+            try store.save(project, to: destination)
+            fileURL = destination
+            isDirty = false
+            return true
+        } catch { errorMessage = error.localizedDescription; return false }
+    }
+    func prepareToQuit() -> Bool {
+        guard mayDiscard() else { return false }
+        metronome.stop()
+        autosaveTask?.cancel()
+        perform { try store.save(project, to: autosaveURL) }
+        return true
+    }
+    func dismissRecovery() { recoveryMessage = nil }
+}
+
+extension UTType {
+    static let visioRhytmProject = UTType(exportedAs: "com.visiorhytm.project", conformingTo: .json)
+}
