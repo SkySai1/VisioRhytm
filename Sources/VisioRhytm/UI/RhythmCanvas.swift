@@ -12,7 +12,7 @@ struct RhythmCanvas: View {
             let ticks = RhythmEngine.timelineEndTicks(project: state.project)
             let scale = 96 * state.zoom / Double(RhythmEngine.ppq)
             let width = max(geometry.size.width - controlsWidth, Double(ticks) * scale + 30)
-            let height = Self.rulerHeight + Double(max(1, state.project.lines.count)) * Self.rowHeight
+            let height = max(geometry.size.height, Self.rulerHeight + CGFloat(max(1, state.project.lines.count)) * Self.rowHeight)
             ScrollView(.vertical) {
                 HStack(alignment: .top, spacing: 0) {
                     VStack(spacing: 0) {
@@ -31,8 +31,8 @@ struct RhythmCanvas: View {
                                 drawGrid(context: &context, size: size, signature: signature, subdivision: state.project.subdivision, ticks: ticks, scale: scale)
                                 let range = RhythmEngine.playbackRange(project: state.project)
                                 let selected = CGRect(x: Double(range.lowerBound) * scale, y: 0,
-                                                      width: Double(range.count) * scale, height: Self.rulerHeight)
-                                context.fill(Path(selected), with: .color(.teal.opacity(0.12)))
+                                                      width: Double(range.count) * scale, height: 3)
+                                context.fill(Path(selected), with: .color(.teal.opacity(0.65)))
                                 for tick in [range.lowerBound, range.upperBound] {
                                     var boundary = Path()
                                     boundary.move(to: CGPoint(x: Double(tick) * scale, y: 0))
@@ -86,14 +86,15 @@ struct RhythmCanvas: View {
             let strength = RhythmEngine.metricalStrength(at: tick, signature: signature)
             let click = RhythmEngine.clickAccent(at: tick, project: state.project)
             if tick < ticks {
-                // Strength covers the entire canvas; purple independently marks audible columns.
-                let color: Color = click == nil ? .blue : .purple
-                context.fill(Path(CGRect(x: x, y: 26, width: Double(step) * scale, height: size.height - 26)),
-                             with: .color(color.opacity(strength.columnOpacity)))
+                // Fill the ruler, every track and remaining viewport space with one semantic color.
+                context.fill(Path(CGRect(x: x, y: 0, width: Double(step) * scale, height: size.height)),
+                             with: .color(strength.columnColor.opacity(strength.columnOpacity)))
                 context.draw(Text(Image(systemName: strength.symbol)).font(.system(size: 7, weight: strength.labelWeight)).foregroundStyle(.secondary),
                              at: CGPoint(x: x + 5, y: 31), anchor: .leading)
             }
             if click != nil {
+                context.fill(Path(CGRect(x: x, y: 0, width: min(3, Double(step) * scale), height: size.height)),
+                             with: .color(.purple.opacity(0.5)))
                 context.fill(Path(ellipseIn: CGRect(x: x + 5, y: 54, width: 5, height: 5)), with: .color(.purple))
             }
             var path = Path()

@@ -19,8 +19,11 @@ extension MetricalStrength {
         case .subdivision: "ellipsis"
         }
     }
+    var columnColor: Color {
+        switch self { case .primary: .orange; case .secondary: .blue; case .weak: .gray; case .subdivision: .gray }
+    }
     var columnOpacity: Double {
-        switch self { case .primary: 0.18; case .secondary: 0.11; case .weak: 0.05; case .subdivision: 0.015 }
+        switch self { case .primary: 0.24; case .secondary: 0.16; case .weak: 0.075; case .subdivision: 0.03 }
     }
     var lineOpacity: Double {
         switch self { case .primary: 0.4; case .secondary: 0.28; case .weak: 0.16; case .subdivision: 0.07 }
@@ -49,14 +52,14 @@ struct MetricalStrengthLegend: View {
                         Image(systemName: strength.symbol)
                             .font(.system(size: 8, weight: strength.labelWeight))
                             .frame(width: 20, height: 16)
-                            .background(Color.blue.opacity(strength.columnOpacity), in: RoundedRectangle(cornerRadius: 3))
+                            .background(strength.columnColor.opacity(strength.columnOpacity), in: RoundedRectangle(cornerRadius: 3))
                             .overlay(RoundedRectangle(cornerRadius: 3).stroke(Color.primary.opacity(strength.lineOpacity)))
                         Text(strength.label)
                     }
                 }
             }
             Text(supportDescription).foregroundStyle(.secondary)
-            Text("Ярче фон — сильнее позиция. Подсказка для ударных слогов; любой слог можно поставить в любую позицию.")
+            Text("Цвет и насыщенность всей колонки показывают силу позиции. Любой слог можно поставить в любую позицию.")
                 .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
     }
